@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# agent-yamen — tongzheng HTTP receiver daemon (inter-yamen inbound).
+#
+# Usage:
+#   tongzheng <project>            # bind 0.0.0.0:8765 by default
+#   YAMEN_BIND=127.0.0.1:9000 tongzheng <project>
+#   tongzheng <project> --bind 192.168.1.10:8765
+#
+# Env:
+#   YAMEN_ROOT      yamen home dir (default ~/.agent-yamen)
+#   YAMEN_BIND override default bind address
+set -e
+
+PROJECT="${1:-}"
+if [ -z "$PROJECT" ]; then
+  echo "[tongzheng] usage: tongzheng <project> [--bind host:port]" >&2
+  echo "available projects:" >&2
+  ls -1 "${YAMEN_ROOT:-$HOME/.agent-yamen}/projects" 2>/dev/null | sed 's/^/  /' >&2
+  exit 1
+fi
+
+BIN="$(cd "$(dirname "$0")" && pwd)"
+MCP_DIR="$(cd "$BIN/.." && pwd)/mcp/yamen-mcp"
+
+VENV_PY="${YAMEN_VENV_PY:-$MCP_DIR/.venv/bin/python}"
+if [ ! -x "$VENV_PY" ]; then
+  echo "[tongzheng] missing python venv at $VENV_PY" >&2
+  echo "[tongzheng] run: cd $MCP_DIR && uv venv .venv && uv pip install --python .venv/bin/python -e ." >&2
+  exit 1
+fi
+
+exec "$VENV_PY" "$MCP_DIR/peer_daemon.py" "$@"

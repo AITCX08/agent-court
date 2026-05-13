@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# agent-court — inject a message into a project's bus.
+# agent-yamen — inject a message into a yamen's bus.
 #
 # Usage:
-#   court-send --project <p> --to <role> [--from <role>] [--reply-to <id>] "body"
-#   court-send -p <p> --to <role> < body.md
+#   chuanwen --project <p> --to <role> [--from <role>] [--reply-to <id>] "body"
+#   chuanwen -p <p> --to <role> < body.md
 set -e
 
 PROJECT=""
@@ -20,15 +20,15 @@ while [ $# -gt 0 ]; do
     --reply-to)   REPLY_TO="$2"; shift 2 ;;
     -h|--help)
       cat <<EOF
-court-send — inject a message into a project's bus.
+chuanwen — inject a message into a yamen's bus.
 
 Usage:
-  court-send -p <project> --to <role> [--from <role>] [--reply-to <id>] "body"
-  court-send -p <project> --to <role> < body.md
+  chuanwen -p <project> --to <role> [--from <role>] [--reply-to <id>] "body"
+  chuanwen -p <project> --to <role> < body.md
 
 Examples:
-  court-send -p example --to foreman "ship the v0.2 changelog"
-  court-send -p example --from frontend --to backend "is /api/users returning enum or string?"
+  chuanwen -p example --to foreman "ship the v0.2 changelog"
+  chuanwen -p example --from frontend --to backend "is /api/users returning enum or string?"
 
 Default --from is "human" (you, the operator).
 EOF
@@ -38,17 +38,17 @@ EOF
   esac
 done
 
-[ -z "$PROJECT" ] && { echo "[court-send] --project (-p) <project> required" >&2; exit 1; }
-[ -z "$TO" ]      && { echo "[court-send] --to <role> required" >&2; exit 1; }
+[ -z "$PROJECT" ] && { echo "[chuanwen] --project (-p) <project> required" >&2; exit 1; }
+[ -z "$TO" ]      && { echo "[chuanwen] --to <role> required" >&2; exit 1; }
 
-ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+ROOT="${YAMEN_ROOT:-$HOME/.agent-yamen}"
 PROJ_ROOT="$ROOT/projects/$PROJECT"
 
-[ -d "$PROJ_ROOT" ] || { echo "[court-send] project '$PROJECT' not found ($PROJ_ROOT/)" >&2; exit 1; }
+[ -d "$PROJ_ROOT" ] || { echo "[chuanwen] project '$PROJECT' not found ($PROJ_ROOT/)" >&2; exit 1; }
 
 if [ -z "$BODY" ]; then
   if [ -t 0 ]; then
-    echo "[court-send] no body and no stdin. Pass \"...\" or pipe via stdin." >&2
+    echo "[chuanwen] no body and no stdin. Pass \"...\" or pipe via stdin." >&2
     exit 1
   fi
   BODY=$(cat)
@@ -60,7 +60,7 @@ if [ ! -d "$OUTBOX" ]; then
   if [ "$FROM" = "human" ] || [ "$FROM" = "upstream" ]; then
     mkdir -p "$OUTBOX" "$PROJ_ROOT/bus/$FROM/inbox" "$PROJ_ROOT/bus/$FROM/inbox/.done"
   else
-    echo "[court-send] from='$FROM' has no outbox ($OUTBOX). Add this role in court.yaml first." >&2
+    echo "[chuanwen] from='$FROM' has no outbox ($OUTBOX). Add this role in yamen.yaml first." >&2
     exit 1
   fi
 fi
@@ -83,6 +83,6 @@ PATH_OUT="$OUTBOX/$FNAME"
   echo "$BODY"
 } >"$PATH_OUT"
 
-echo "[court-send:$PROJECT] wrote $PATH_OUT"
+echo "[chuanwen:$PROJECT] wrote $PATH_OUT"
 echo "  $FROM -> $TO (id=$ID)"
 echo "  watcher will route to bus/$TO/inbox/"

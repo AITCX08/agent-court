@@ -1,39 +1,39 @@
-# agent-court peers configuration — example
+# agent-yamen peers configuration — example
 #
-# Real file lives at $COURT_ROOT/projects/<project>/peers.yaml — one per
+# Real file lives at $YAMEN_ROOT/projects/<project>/bangjiao.yaml — one per
 # project. Each project has its own keypair and its own peer list; project
 # A's peers cannot infer that project B exists on the same machine.
 #
 # Workflow:
-#   1. On each machine, for each project, run `court-keygen <project>`.
+#   1. On each machine, for each project, run `zhuyin <project>`.
 #      It prints a fingerprint and a public key.
 #   2. Out of band (Signal, in person), exchange fingerprints + pubkeys
 #      with the other side. Specify which project each key belongs to.
-#   3. Each side edits THIS project's peers.yaml to list the other side(s).
-#   4. Enable `federation:` in court.yaml.
-#   5. Start `court-peer <project>` on each side.
-#   6. Call `dispatch_to_peer(project, peer_court_id, message)` from MCP.
+#   3. Each side edits THIS project's bangjiao.yaml to list the other side(s).
+#   4. Enable `bangjiao:` in yamen.yaml.
+#   5. Start `tongzheng <project>` on each side.
+#   6. Call `dispatch_to_peer(project, peer_yamen_id, message)` from MCP.
 
-# Your own court identity. Optional — court_id falls back to the federation
-# block's court_id, which defaults to "<hostname>-<project>". The fingerprint
+# Your own court identity. Optional — yamen_id falls back to the federation
+# block's yamen_id, which defaults to "<hostname>-<project>". The fingerprint
 # is informational; the daemon always re-derives it from the on-disk pub.key.
 self:
-  court_id: "alice-laptop-example"
+  yamen_id: "alice-laptop-example"
   pub_key_fingerprint: "ab12cd34ef56gh78"     # informational
 
 # Each peer is a remote court (a specific project on a specific machine).
 #
-# url         : base HTTP URL of the peer's court-peer daemon (no trailing slash).
+# url         : base HTTP URL of the peer's tongzheng daemon (no trailing slash).
 # pub_key_fingerprint : for human eyeball-verification on first config.
 # pub_key_b64 : the peer's public key (base64). Required at runtime for signature verify.
 # relation    : parent | child | sibling. Informational; later PRs let policy
 #               rules vary by relation (e.g. parent's dispatches are auto-allowed).
 # policy_tier : (PR-2, optional) tier_a | tier_b | tier_c. Pins how this peer's
-#               inbound messages are gated. Absent = use policy.yaml default_tier.
+#               inbound messages are gated. Absent = use lvli.yaml default_tier.
 #               Hard rules (deny_paths, sensitive keywords) always apply on top.
 peers:
   - name: "Bob (PM)"
-    court_id: "bob-laptop-example"
+    yamen_id: "bob-laptop-example"
     url: "http://192.168.1.50:8765"
     pub_key_fingerprint: "f0e1d2c3b4a59687"
     pub_key_b64: "REPLACE_WITH_THE_BASE64_PUBLIC_KEY_BOB_GAVE_YOU="
@@ -41,7 +41,7 @@ peers:
     policy_tier: "tier_b"      # standard: judge (PR-3 will route to llm_judge)
 
   - name: "Carol (CTO)"
-    court_id: "carol-cto-example"
+    yamen_id: "carol-cto-example"
     url: "http://10.0.5.12:8765"
     pub_key_fingerprint: "1f2e3d4c5b6a7988"
     pub_key_b64: "REPLACE_WITH_CAROLS_PUBLIC_KEY="
@@ -49,7 +49,7 @@ peers:
     policy_tier: "tier_c"      # parent court is trusted; auto-pass into inbox
 
   - name: "External vendor"
-    court_id: "vendor-build-bot"
+    yamen_id: "vendor-build-bot"
     url: "http://203.0.113.5:8765"
     pub_key_fingerprint: "deadbeefcafe1234"
     pub_key_b64: "REPLACE_WITH_VENDORS_PUBLIC_KEY="

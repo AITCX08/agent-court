@@ -7,7 +7,7 @@ __pycache__/
 .mypy_cache/
 
 # Local venvs (each user re-creates them)
-.venv/
+.venv
 venv/
 env/
 

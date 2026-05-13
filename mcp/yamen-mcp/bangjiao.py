@@ -1,15 +1,15 @@
-"""agent-court — shared peer-network primitives.
+"""agent-yamen — shared peer-network primitives.
 
 Used by ``court-keygen``, ``court-peer`` (HTTP receiver) and the MCP
 server's peer tools. Lives next to the MCP server because they share a
 venv (cryptography, aiohttp, pyyaml).
 
 Identity model is **per-project** (see ARCHITECTURE.md): each project
-has its own keypair + peers.yaml under
-``$COURT_ROOT/projects/<project>/`` so peer ``A`` of project ``work`` has
+has its own keypair + bangjiao.yaml under
+``$YAMEN_ROOT/projects/<project>/`` so peer ``A`` of project ``work`` has
 no way to know that project ``personal`` exists on the same machine.
 
-Functions are pure: no global mutable state. ``COURT_ROOT`` is resolved
+Functions are pure: no global mutable state. ``YAMEN_ROOT`` is resolved
 on each call via :func:`court_root` so the module is safe to import from
 tests with monkeypatched env.
 """
@@ -43,7 +43,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 # Input-sanitization helpers (used by inbox handler + bus writer)
 # ---------------------------------------------------------------------------
 
-# court_id / role names / message ids that show up as path components on disk
+# yamen_id / role names / message ids that show up as path components on disk
 # must be tightly constrained — they originate from an authenticated peer
 # but a malicious-yet-registered peer could otherwise pick a value like
 # "../shared" and escape ``bus/<peer>/``.
@@ -59,7 +59,7 @@ def assert_safe_path_component(value, *, field_name: str) -> str:
     """Return ``value`` unchanged if it is a single safe name, else raise.
 
     A "safe name" is 1–128 chars of ``[A-Za-z0-9._-]``, excluding ``.`` and
-    ``..``. These rules apply to ``court_id``, role names, and message ids
+    ``..``. These rules apply to ``yamen_id``, role names, and message ids
     — anything that ends up as a directory or filename segment under
     ``bus/``.
     """
@@ -140,7 +140,7 @@ def ts_is_fresh(iso_ts, *, window_seconds: int = 300) -> bool:
 # ---------------------------------------------------------------------------
 
 def court_root() -> Path:
-    return Path(os.environ.get("COURT_ROOT", str(Path.home() / ".agent-court")))
+    return Path(os.environ.get("YAMEN_ROOT", str(Path.home() / ".agent-yamen")))
 
 
 def project_dir(project: str) -> Path:
@@ -164,11 +164,11 @@ def project_pub_key_path(project: str) -> Path:
 
 
 def project_peers_yaml_path(project: str) -> Path:
-    return project_dir(project) / "peers.yaml"
+    return project_dir(project) / "bangjiao.yaml"
 
 
 def project_court_yaml_path(project: str) -> Path:
-    return project_dir(project) / "court.yaml"
+    return project_dir(project) / "yamen.yaml"
 
 
 def project_logs_dir(project: str) -> Path:
@@ -176,14 +176,14 @@ def project_logs_dir(project: str) -> Path:
 
 
 def project_peer_errors_log(project: str) -> Path:
-    return project_logs_dir(project) / "peer-errors.log"
+    return project_logs_dir(project) / "bangjiao-errors.log"
 
 
 def all_projects() -> list[str]:
     base = court_root() / "projects"
     if not base.is_dir():
         return []
-    return sorted(d.name for d in base.iterdir() if d.is_dir() and (d / "court.yaml").is_file())
+    return sorted(d.name for d in base.iterdir() if d.is_dir() and (d / "yamen.yaml").is_file())
 
 
 # ---------------------------------------------------------------------------
@@ -324,18 +324,18 @@ def verify_signature(msg: dict, signature_b64, sender_pub_b64) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# court.yaml federation block
+# yamen.yaml federation block
 # ---------------------------------------------------------------------------
 
 @dataclass
-class JudgeConfig:
+class TuiguanConfig:
     """PR-3 — config for the LLM judge invoked on policy `judge` decisions.
 
     All fields are optional. ``cli``/``model``/``prompt_file`` = None means
-    "fall back to a sensible default": ``cli`` falls back to court.yaml's
+    "fall back to a sensible default": ``cli`` falls back to yamen.yaml's
     top-level ``default_cli``; ``model`` is left as the CLI's own default;
     ``prompt_file`` falls back to the built-in
-    ``mcp/court-mcp/prompts/judge.md``.
+    ``mcp/yamen-mcp/prompts/tuiguan.md``.
     """
     cli: Optional[str] = None
     model: Optional[str] = None
@@ -345,32 +345,32 @@ class JudgeConfig:
 
 
 @dataclass
-class FederationConfig:
+class BangjiaoConfig:
     enabled: bool = False
-    court_id: str = ""
+    yamen_id: str = ""
     # Roles outside peers may dispatch *to*. Missing in YAML → fail-closed
-    # to ``["foreman"]`` so a misconfigured court doesn't accidentally
+    # to ``["zongguan"]`` so a misconfigured court doesn't accidentally
     # accept inbound dispatches to every role. An explicit empty list
     # means "expose nothing" and locks the daemon down completely.
-    expose_roles: list[str] = field(default_factory=lambda: ["foreman"])
+    expose_roles: list[str] = field(default_factory=lambda: ["zongguan"])
     allow_paths: list[str] = field(default_factory=list)         # glob whitelist (PR-2 enforces)
     deny_paths: list[str] = field(default_factory=list)          # glob blacklist (PR-2 enforces)
-    judge: JudgeConfig = field(default_factory=JudgeConfig)      # PR-3 LLM judge config
-    default_cli: str = "claude"                                   # court.yaml top-level — used when judge.cli is unset
+    tuiguan: TuiguanConfig = field(default_factory=TuiguanConfig)      # PR-3 LLM judge config
+    default_cli: str = "claude"                                   # yamen.yaml top-level — used when tuiguan.cli is unset
 
 
-def _default_court_id(project: str) -> str:
+def _default_yamen_id(project: str) -> str:
     host = os.environ.get("COURT_HOSTNAME") or socket.gethostname() or "host"
     # strip the trailing ".local" macOS adds, looks ugly in network configs
     host = host.removesuffix(".local")
     return f"{host}-{project}"
 
 
-def load_federation(project: str) -> FederationConfig:
-    """Read court.yaml's ``federation:`` block.
+def load_bangjiao(project: str) -> BangjiaoConfig:
+    """Read yamen.yaml's ``bangjiao:`` block.
 
     Returns a disabled config if the file is missing, the block is absent,
-    or ``enabled: false``. court_id falls back to ``<hostname>-<project>``.
+    or ``enabled: false``. yamen_id falls back to ``<hostname>-<project>``.
     """
     cfg_path = project_court_yaml_path(project)
     raw = {}
@@ -378,35 +378,37 @@ def load_federation(project: str) -> FederationConfig:
         with cfg_path.open() as f:
             raw = yaml.safe_load(f) or {}
 
-    block = raw.get("federation") or {}
+    # Accept both the new "bangjiao:" key and the legacy "federation:" key
+    # so existing yamen.yaml files keep working through the rename.
+    block = raw.get("bangjiao") or raw.get("federation") or {}
     enabled = bool(block.get("enabled", False))
-    judge = _parse_judge_config(block.get("judge") or {})
+    tuiguan_cfg = _parse_tuiguan_config(block.get("tuiguan") or {})
 
     # expose_roles defaulting:
-    # - key missing from YAML → fail-closed to ["foreman"]
+    # - key missing from YAML → fail-closed to ["zongguan"]
     # - explicit empty list   → respect the user; no role exposed (locks down)
     raw_expose = block.get("expose_roles")
     if raw_expose is None:
-        expose_roles = ["foreman"]
+        expose_roles = ["zongguan"]
     else:
         expose_roles = [str(r) for r in raw_expose]
 
-    return FederationConfig(
+    return BangjiaoConfig(
         enabled=enabled,
-        court_id=block.get("court_id") or _default_court_id(project),
+        yamen_id=block.get("yamen_id") or _default_yamen_id(project),
         expose_roles=expose_roles,
         allow_paths=list(block.get("allow_paths") or []),
         deny_paths=list(block.get("deny_paths") or []),
-        judge=judge,
+        tuiguan=tuiguan_cfg,
         default_cli=str(raw.get("default_cli") or "claude"),
     )
 
 
-def _parse_judge_config(judge_block: dict) -> JudgeConfig:
-    """Build a JudgeConfig from the raw YAML dict, clamping invalid values
+def _parse_tuiguan_config(tuiguan_block: dict) -> TuiguanConfig:
+    """Build a TuiguanConfig from the raw YAML dict, clamping invalid values
     to safe defaults so a misconfigured judge can't silently break the
     fail-safe escape hatch."""
-    raw_timeout = judge_block.get("timeout_seconds", 30)
+    raw_timeout = tuiguan_block.get("timeout_seconds", 30)
     try:
         timeout = float(raw_timeout)
         if not math.isfinite(timeout) or timeout <= 0:
@@ -414,7 +416,7 @@ def _parse_judge_config(judge_block: dict) -> JudgeConfig:
     except (TypeError, ValueError):
         timeout = 30.0
 
-    raw_threshold = judge_block.get("confidence_threshold", 0.6)
+    raw_threshold = tuiguan_block.get("confidence_threshold", 0.6)
     try:
         threshold = float(raw_threshold)
         if not math.isfinite(threshold):
@@ -426,23 +428,23 @@ def _parse_judge_config(judge_block: dict) -> JudgeConfig:
     except (TypeError, ValueError):
         threshold = 0.6
 
-    return JudgeConfig(
-        cli=judge_block.get("cli"),
-        model=judge_block.get("model"),
-        prompt_file=judge_block.get("prompt_file"),
+    return TuiguanConfig(
+        cli=tuiguan_block.get("cli"),
+        model=tuiguan_block.get("model"),
+        prompt_file=tuiguan_block.get("prompt_file"),
         timeout_seconds=timeout,
         confidence_threshold=threshold,
     )
 
 
 # ---------------------------------------------------------------------------
-# peers.yaml
+# bangjiao.yaml
 # ---------------------------------------------------------------------------
 
 @dataclass
 class Peer:
     name: str
-    court_id: str
+    yamen_id: str
     url: str
     pub_key_fingerprint: str
     pub_key_b64: Optional[str]
@@ -453,20 +455,20 @@ class Peer:
 @dataclass
 class PeersConfig:
     project: str
-    self_court_id: str
+    self_yamen_id: str
     self_fingerprint: str
     peers: list[Peer]
 
-    def by_court_id(self, court_id: str) -> Optional[Peer]:
+    def by_yamen_id(self, yamen_id: str) -> Optional[Peer]:
         for p in self.peers:
-            if p.court_id == court_id:
+            if p.yamen_id == yamen_id:
                 return p
         return None
 
 
 def load_peers(project: str) -> PeersConfig:
-    """Load this project's peers.yaml + reconcile with the federation block & key on disk."""
-    fed = load_federation(project)
+    """Load this project's bangjiao.yaml + reconcile with the federation block & key on disk."""
+    fed = load_bangjiao(project)
 
     p = project_peers_yaml_path(project)
     raw = {}
@@ -475,7 +477,7 @@ def load_peers(project: str) -> PeersConfig:
             raw = yaml.safe_load(f) or {}
 
     self_block = raw.get("self") or {}
-    self_court_id = self_block.get("court_id") or fed.court_id
+    self_yamen_id = self_block.get("yamen_id") or fed.yamen_id
 
     try:
         identity = load_identity(project)
@@ -486,8 +488,8 @@ def load_peers(project: str) -> PeersConfig:
     peers = []
     for entry in raw.get("peers") or []:
         peers.append(Peer(
-            name=entry.get("name", entry.get("court_id", "")),
-            court_id=entry["court_id"],
+            name=entry.get("name", entry.get("yamen_id", "")),
+            yamen_id=entry["yamen_id"],
             url=entry["url"].rstrip("/"),
             pub_key_fingerprint=entry["pub_key_fingerprint"],
             pub_key_b64=entry.get("pub_key_b64"),
@@ -498,7 +500,7 @@ def load_peers(project: str) -> PeersConfig:
         ))
     return PeersConfig(
         project=project,
-        self_court_id=self_court_id,
+        self_yamen_id=self_yamen_id,
         self_fingerprint=self_fp,
         peers=peers,
     )
@@ -554,12 +556,12 @@ def write_inbound_to_bus(
 
     Default lands at ``$bus/<from_court>/inbox/<unix_ts>-<id>-<from>-to-<to>.md``.
     PR-2 callers may pass ``subdir="pending-approval"`` or ``"denied"`` to
-    park messages that didn't auto-pass; the foreman never sees those
+    park messages that didn't auto-pass; the zongguan never sees those
     files unless a human moves them into ``inbox/``.
 
     When ``policy_decision`` is given, frontmatter gets two extra fields
     (``policy_decision``, ``policy_reasons``) so a downstream reader
-    (foreman, llm_judge, human reviewer) can see *why* the message
+    (zongguan, llm_judge, human reviewer) can see *why* the message
     landed where it did without consulting the audit log.
 
     The existing ``court-watcher`` only inspects ``*/outbox/*.md`` files,
