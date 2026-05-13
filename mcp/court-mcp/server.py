@@ -490,6 +490,58 @@ def dispatch_to_peer(
     }
 
 
+def _grant_to_row(g, *, include_metrics: bool = True) -> dict:
+    """Serialize a Grant dataclass to the dict shape used in MCP replies."""
+    row = {
+        "id": g.id,
+        "grant_type": g.grant_type,
+        "granted_to": g.granted_to,
+        "paths": g.paths,
+        "target_tier": g.target_tier,
+        "consume_on_use": g.consume_on_use,
+        "consumed_ts": g.consumed_ts,
+        "issued_ts": g.issued_ts,
+        "expires_ts": g.expires_ts,
+        "issued_by": g.issued_by,
+    }
+    if include_metrics:
+        row["hit_count"] = g.hit_count
+        row["last_hit_ts"] = g.last_hit_ts
+        row["remaining_seconds"] = g.remaining_seconds()
+    return row
+
+
+def _bad_project_reply(project: str) -> dict:
+    return {
+        "error": "unknown_project",
+        "project": project,
+        "available": peer_lib.all_projects(),
+    }
+
+
+def _check_peer_exists(project: str, peer_court_id: str) -> Optional[dict]:
+    """Return an MCP error dict if ``peer_court_id`` isn't in peers.yaml.
+
+    Returns None when the peer exists (so the caller can proceed) or
+    when peers.yaml is missing/empty (loose mode — let mint proceed so
+    bootstrap-time grants still work).
+    """
+    try:
+        peers = peer_lib.load_peers(project)
+    except Exception:  # noqa: BLE001  — refuse to fail mint over loader hiccup
+        return None
+    if not peers.peers:
+        return None
+    if peers.by_court_id(peer_court_id) is None:
+        return {
+            "error": "unknown_peer",
+            "project": project,
+            "peer_court_id": peer_court_id,
+            "available": [p.court_id for p in peers.peers],
+        }
+    return None
+
+
 @mcp.tool()
 def grant_peer_access(
     project: str,
@@ -498,7 +550,7 @@ def grant_peer_access(
     ttl: str = "30m",
     issued_by: str = "",
 ) -> dict:
-    """Mint a temporary grant widening this project's allow_paths for one peer.
+    """Mint a temporary *path* grant widening this project's allow_paths.
 
     Use this when an upstream LLM decides "give Bob's court a 30-min
     look at these specific files". The grant is durable on disk, takes
@@ -513,34 +565,83 @@ def grant_peer_access(
         paths: list of path globs the peer may attach for the duration.
             Same dialect as ``allow_paths`` in court.yaml.
         ttl: how long the grant is valid. Accepts ``"30m"``, ``"1h"``,
-            ``"2h30m"``, ``"1d"``, or a bare integer (seconds).
+            ``"2h30m"``, ``"1d"``, or a bare integer (seconds). Capped
+            at 1 year.
         issued_by: optional free-form tag for the audit trail.
 
     Returns:
-        Dict with the grant's id + expires_ts, or an ``error`` field on
+        Dict with the grant fields on success, or an ``error`` dict on
         failure. Never raises.
     """
     if not peer_lib.project_dir(project).is_dir():
-        return {
-            "error": "unknown_project",
-            "project": project,
-            "available": peer_lib.all_projects(),
-        }
+        return _bad_project_reply(project)
+    if not isinstance(paths, list) or not paths:
+        return {"error": "invalid_argument", "detail": "paths must be a non-empty list", "project": project}
+    bad_peer = _check_peer_exists(project, peer_court_id)
+    if bad_peer is not None:
+        return bad_peer
     try:
-        grant = _grants.mint_grant(
+        grant = _grants.mint_path_grant(
             project, peer_court_id, list(paths), ttl=ttl, issued_by=issued_by,
         )
     except ValueError as e:
         return {"error": "invalid_argument", "detail": str(e), "project": project}
-    return {
-        "project": project,
-        "id": grant.id,
-        "granted_to": grant.granted_to,
-        "paths": grant.paths,
-        "issued_ts": grant.issued_ts,
-        "expires_ts": grant.expires_ts,
-        "issued_by": grant.issued_by,
-    }
+    except OSError as e:
+        return {"error": "io_error", "detail": str(e), "project": project}
+    return {"project": project, **_grant_to_row(grant)}
+
+
+@mcp.tool()
+def grant_peer_tier(
+    project: str,
+    peer_court_id: str,
+    target_tier: str,
+    ttl: str = "30m",
+    consume_on_use: bool = False,
+    issued_by: str = "",
+) -> dict:
+    """Mint a temporary *tier* grant overriding a peer's policy tier.
+
+    Useful when you want to wave a single message (or a short stream)
+    past the soft-layer review. The grant only raises the peer's
+    effective tier; hardcoded denies and user deny_paths still apply.
+
+    Args:
+        project: this side's project.
+        peer_court_id: peer's court_id as listed in peers.yaml.
+        target_tier: one of ``"tier_a"`` / ``"tier_b"`` / ``"tier_c"``.
+            Use ``"tier_c"`` to skip judge/human review for the
+            duration.
+        ttl: how long the grant is valid (same syntax as
+            :func:`grant_peer_access`).
+        consume_on_use: if True the grant fires exactly once, then
+            marks itself consumed; subsequent inbound messages fall
+            back to the configured tier.
+        issued_by: optional free-form tag.
+
+    Returns:
+        Dict with the grant fields on success, or an ``error`` dict on
+        failure.
+    """
+    if not peer_lib.project_dir(project).is_dir():
+        return _bad_project_reply(project)
+    bad_peer = _check_peer_exists(project, peer_court_id)
+    if bad_peer is not None:
+        return bad_peer
+    try:
+        grant = _grants.mint_tier_grant(
+            project,
+            peer_court_id,
+            target_tier,
+            ttl=ttl,
+            consume_on_use=bool(consume_on_use),
+            issued_by=issued_by,
+        )
+    except ValueError as e:
+        return {"error": "invalid_argument", "detail": str(e), "project": project}
+    except OSError as e:
+        return {"error": "io_error", "detail": str(e), "project": project}
+    return {"project": project, **_grant_to_row(grant)}
 
 
 @mcp.tool()
@@ -549,44 +650,55 @@ def list_grants(project: str) -> dict:
 
     Useful for "who has access right now?" status queries. The reply
     splits grants into ``active`` and ``expired`` lists so the upstream
-    LLM can show only the live ones by default.
+    LLM can show only the live ones by default. Each entry includes
+    ``grant_type``, ``hit_count`` and ``remaining_seconds`` for quick
+    triage.
     """
     if not peer_lib.project_dir(project).is_dir():
-        return {
-            "error": "unknown_project",
-            "project": project,
-            "available": peer_lib.all_projects(),
-        }
+        return _bad_project_reply(project)
+    try:
+        rows = _grants.list_grants(project)
+    except ValueError as e:
+        return {"error": "invalid_argument", "detail": str(e), "project": project}
     active: list[dict] = []
     expired: list[dict] = []
-    for g in _grants.list_grants(project):
-        row = {
-            "id": g.id,
-            "granted_to": g.granted_to,
-            "paths": g.paths,
-            "issued_ts": g.issued_ts,
-            "expires_ts": g.expires_ts,
-            "issued_by": g.issued_by,
-        }
-        (active if g.is_active() else expired).append(row)
+    for g in rows:
+        (active if g.is_active() else expired).append(_grant_to_row(g))
     return {"project": project, "active": active, "expired": expired}
 
 
 @mcp.tool()
-def revoke_grant(project: str, grant_id: str) -> dict:
-    """Delete a grant by id. Returns ``{"ok": true}`` if removed, else
-    an ``error`` dict."""
+def grant_info(project: str, grant_id: str) -> dict:
+    """Return one grant's full record, including hit_count + remaining time."""
     if not peer_lib.project_dir(project).is_dir():
-        return {
-            "error": "unknown_project",
-            "project": project,
-            "available": peer_lib.all_projects(),
-        }
-    removed = _grants.revoke_grant(project, grant_id)
-    if removed:
-        return {"ok": True, "project": project, "grant_id": grant_id}
+        return _bad_project_reply(project)
+    try:
+        g = _grants.find_grant(project, grant_id)
+    except ValueError as e:
+        return {"error": "invalid_argument", "detail": str(e), "project": project}
+    if g is None:
+        return {"error": "unknown_grant", "project": project, "grant_id": grant_id}
     return {
-        "error": "unknown_grant",
+        "project": project,
+        "state": "active" if g.is_active() else "expired",
+        **_grant_to_row(g),
+    }
+
+
+@mcp.tool()
+def revoke_grant(project: str, grant_id: str) -> dict:
+    """Delete a grant by id. Returns ``{"ok": true, "result": "revoked"}``
+    on success, or an ``error`` dict naming the failure mode."""
+    if not peer_lib.project_dir(project).is_dir():
+        return _bad_project_reply(project)
+    try:
+        result = _grants.revoke_grant(project, grant_id)
+    except ValueError as e:
+        return {"error": "invalid_argument", "detail": str(e), "project": project}
+    if result == "revoked":
+        return {"ok": True, "result": "revoked", "project": project, "grant_id": grant_id}
+    return {
+        "error": result,            # invalid_id | not_found | io_error
         "project": project,
         "grant_id": grant_id,
     }

@@ -243,18 +243,35 @@ async def _inbox(request: web.Request) -> web.Response:
 
     # PR-2 policy layer — runs after signature + role whitelist pass.
     # peer_tier comes from peers.yaml entry, falls back to policy.default_tier.
-    # PR-4: pull this peer's active grants and pass them in to widen
-    # allow_paths for the duration of each grant.
+    # PR-4: load both path grants (widen allow_paths) and tier grants
+    # (override peer_tier) for the inbound peer. Pass them structured so
+    # the policy engine can attribute matches back to specific grant ids;
+    # after evaluate we update those grants' hit_count / consumed_ts.
     policy_cfg = policy.load_policy(project)
-    grant_paths = grants.load_grants_for_peer(project, from_court)
+    path_grants = grants.load_path_grants_for_peer(project, from_court)
+    tier_grant = grants.load_effective_tier_grant(project, from_court)
     decision = policy.evaluate(
         msg,
         peer_tier=peer.policy_tier,
         policy=policy_cfg,
         allow_paths=fed.allow_paths,
         deny_paths=fed.deny_paths,
-        grant_paths=grant_paths,
+        path_grants=path_grants,
+        tier_grant=tier_grant,
     )
+
+    # Record hits and consume one-shot tier grants. Best-effort: a
+    # failing rewrite logs to peer-errors.log but never blocks delivery.
+    if decision.grant_hits:
+        consumable_ids = {
+            tier_grant.id
+            for tier_grant in (tier_grant,)
+            if tier_grant is not None and tier_grant.consume_on_use
+        }
+        for gid in decision.grant_hits:
+            grants.record_hit(project, gid)
+            if gid in consumable_ids:
+                grants.mark_consumed(project, gid)
 
     # PR-3 — refine the `judge` tier via an LLM call. Anything else
     # (auto_pass / human_required / denied) is final and goes to disk now.

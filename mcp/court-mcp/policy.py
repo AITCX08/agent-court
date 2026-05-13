@@ -131,6 +131,10 @@ _TIER_ACTION: dict[str, str] = {
     "tier_c": "auto_pass",
 }
 
+# Priority for "which tier is more permissive". Used by tier_grant logic
+# in :func:`evaluate` and by grants.load_effective_tier_grant.
+_TIER_PRIORITY: dict[str, int] = {"tier_a": 0, "tier_b": 1, "tier_c": 2}
+
 
 # ---------------------------------------------------------------------------
 # Config + decision dataclasses
@@ -147,6 +151,10 @@ class Decision:
     action: str                       # auto_pass | judge | human_required | denied
     tier: str                         # tier_a/b/c, or "hard_rule" when a hard layer fired
     reasons: list[str] = field(default_factory=list)
+    # PR-4.1 — grant ids whose paths/tier matched during evaluation. The
+    # daemon iterates this list after evaluate() to call grants.record_hit
+    # (and grants.mark_consumed for consume_on_use tier grants).
+    grant_hits: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +280,8 @@ def evaluate(
     allow_paths: list[str],
     deny_paths: list[str],
     grant_paths: Optional[list[str]] = None,
+    path_grants: Optional[list] = None,
+    tier_grant=None,
 ) -> Decision:
     """Return the policy ``Decision`` for an inbound message.
 
@@ -290,15 +300,44 @@ def evaluate(
         HARDCODED_DENY_PATHS is checked in addition (not as a
         replacement).
     grant_paths : list[str] or None
-        PR-4 — additional path globs (loaded from active grants for
-        this peer) that widen ``allow_paths`` *only*. Grants never
-        relax hardcoded denies, never relax user deny_paths, and never
-        change the tier-based decision. Set to ``None`` or empty list
-        if no grants apply.
+        PR-4 legacy shape — flat list of path globs already-flattened
+        from active grants. When provided, hits do NOT show up in
+        ``decision.grant_hits``. Prefer ``path_grants`` for new callers.
+    path_grants : list[Grant] or None
+        PR-4.1 — structured list of active path grants for this peer.
+        Each grant's paths are OR'd into the effective allow_paths; when
+        an attach matches a pattern from a specific grant, that grant's
+        id is appended to ``decision.grant_hits`` so the daemon can
+        update its hit_count.
+    tier_grant : Grant or None
+        PR-4.1 — optional active tier grant for this peer. When present
+        and well-formed, ``tier_grant.target_tier`` overrides
+        ``peer_tier`` for the soft-layer decision. If the tier grant
+        actually fires (the soft layer was the deciding layer), its id
+        goes into ``decision.grant_hits`` so the daemon can record the
+        hit and optionally mark it consumed.
     """
     reasons: list[str] = []
+    grant_hits: list[str] = []
     raw_attaches: list = list(msg.get("attaches") or [])
     body = msg.get("body") or ""
+
+    # Build (pattern → grant_id) for hit attribution. If both legacy
+    # grant_paths and structured path_grants are provided, path_grants
+    # wins (the structured form carries grant ids; the flat list does
+    # not).
+    pattern_to_grant_id: dict[str, str] = {}
+    derived_grant_paths: list[str] = []
+    if path_grants:
+        for g in path_grants:
+            for pat in getattr(g, "paths", []) or []:
+                derived_grant_paths.append(pat)
+                # First grant to register a pattern owns it; this only
+                # matters when two grants happen to share a pattern.
+                pattern_to_grant_id.setdefault(pat, getattr(g, "id", ""))
+        effective_grant_paths = derived_grant_paths
+    else:
+        effective_grant_paths = list(grant_paths or [])
 
     # --- Pre-pass: normalize every attach. An attach that fails
     # normalization (absolute path with no tail, traversal segments,
@@ -336,7 +375,7 @@ def evaluate(
     # cannot turn a permissive (empty) allow_paths into a restrictive one,
     # but they can let a specific path through an existing restriction.
     if allow_paths and normalized:
-        effective_allow = list(allow_paths) + list(grant_paths or [])
+        effective_allow = list(allow_paths) + effective_grant_paths
         for path in normalized:
             hit = _match_any(path, effective_allow)
             if hit is None:
@@ -346,14 +385,18 @@ def evaluate(
                 )
                 return Decision(
                     action="human_required", tier="hard_rule", reasons=reasons,
+                    grant_hits=grant_hits,
                 )
-            # If the match came from grant_paths (not the static list)
-            # note it in the audit trail so a reviewer can see *why* an
-            # otherwise-disallowed path got through.
-            if grant_paths and hit in grant_paths and hit not in allow_paths:
+            # If the match came from a grant (not the static list) note
+            # it in the audit trail AND register the grant's id for hit
+            # tracking so ``court-grant info`` shows usage.
+            if hit in effective_grant_paths and hit not in allow_paths:
                 reasons.append(
                     f"attach '{path}' covered by active grant pattern '{hit}'"
                 )
+                gid = pattern_to_grant_id.get(hit)
+                if gid and gid not in grant_hits:
+                    grant_hits.append(gid)
 
     # 4. Sensitive keywords (hardcoded + policy extras).
     all_keywords = list(HARDCODED_KEYWORDS) + list(policy.extra_keywords)
@@ -367,12 +410,33 @@ def evaluate(
 
     # --- Soft layer (tier-based) -------------------------------------------
 
-    tier = peer_tier or policy.default_tier
+    base_tier = peer_tier or policy.default_tier
+    tier = base_tier
+
+    # Tier grant overrides peer_tier *only* on the soft layer, and only
+    # if it would actually permit something more than the base tier
+    # (we never silently *downgrade* via a grant — that would be
+    # surprising, and there's no legitimate workflow for it).
+    if tier_grant is not None:
+        target = getattr(tier_grant, "target_tier", None)
+        gid = getattr(tier_grant, "id", None)
+        if target in _TIER_ACTION:
+            base_pri = _TIER_PRIORITY.get(base_tier, -1)
+            target_pri = _TIER_PRIORITY.get(target, -1)
+            if target_pri > base_pri:
+                reasons.append(
+                    f"tier grant active: {base_tier} → {target} "
+                    f"(grant_id={gid})"
+                )
+                tier = target
+                if gid and gid not in grant_hits:
+                    grant_hits.append(gid)
+
     action = _TIER_ACTION.get(tier, "human_required")
     if tier not in _TIER_ACTION:
         reasons.append(f"unknown tier '{tier}' → falling back to human_required")
     reasons.append(f"tier={tier} → action={action}")
-    return Decision(action=action, tier=tier, reasons=reasons)
+    return Decision(action=action, tier=tier, reasons=reasons, grant_hits=grant_hits)
 
 
 # ---------------------------------------------------------------------------

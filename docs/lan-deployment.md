@@ -308,33 +308,78 @@ generic.
 
 When the *receiver* wants to let a specific peer poke at a file
 outside `allow_paths` for a short while ("just look at
-`notes/q2-plan.md` for the next 30 minutes"), they mint a grant
-instead of editing `court.yaml`. Grants are time-bounded,
-peer-scoped, and only *widen* the allow list — hardcoded denies
-(`.ssh`, `.env`, `/etc`, `credentials.json`, etc.) still win and
-the user's own `deny_paths` still win.
+`notes/q2-plan.md` for the next 30 minutes"), or wave a single
+message past the soft-tier review, they mint a grant instead of
+editing `court.yaml`. Grants are time-bounded, peer-scoped, and
+only ever *add* capabilities — hardcoded denies (`.ssh`, `.env`,
+`/etc`, `credentials.json`, etc.) and the user's own `deny_paths`
+always still win.
+
+Two grant types:
+
+| Type | What it relaxes | Use |
+|---|---|---|
+| **path** | `allow_paths` | the attach you want through isn't in the static whitelist |
+| **tier** | the peer's `policy_tier` for one (`--once`) or many messages | want to skip judge/human review for a known-good batch |
 
 ```bash
-# Bare three-arg form is the common case: `add` is implicit.
-# Default TTL 30m; --ttl accepts 30m / 1h / 2h30m / 1d / bare seconds.
+# Path grants — common case: `add` is implicit.
 court-grant example bob "notes/**"
 court-grant example bob "shared/draft-*.md" --ttl 2h
 
+# Tier grants — pass --tier <tier>. Add --once for fire-once semantics.
+court-grant example bob --tier tier_c --once          # one free pass
+court-grant example bob --tier tier_c --ttl 1h        # window of trust
+
 # List active + expired grants for a project.
 court-grant example list
-# STATE   ID         PEER  EXPIRES                       PATHS
-# active  4616c19a   bob   2026-05-11T22:53:00+08:00     notes/**
+# STATE     T ID         PEER  EXPIRES                       HITS DETAIL
+# active    P 4616c19a   bob   2026-05-13T22:53:00+08:00     0    notes/**
+# active    T 7fa20bd8   bob   2026-05-13T23:00:00+08:00     0    →tier_c [once]
+# consumed  T 9a01ee3c   bob   2026-05-13T22:00:00+08:00     1    →tier_c [once]
+
+# Inspect one grant in detail.
+court-grant example info 4616c19a
+# id            : 4616c19a
+# grant_type    : path
+# state         : active
+# granted_to    : bob
+# paths         : ['notes/**']
+# issued_ts     : 2026-05-13T22:23:00+08:00
+# issued_by     : alice@laptop
+# expires_ts    : 2026-05-13T22:53:00+08:00
+# remaining     : 27m13s
+# hit_count     : 2
+# last_hit_ts   : 2026-05-13T22:35:18+08:00
+# file          : /Users/alice/.agent-court/projects/example/grants/4616c19a.json
 
 # Kill a grant before its TTL.
 court-grant example revoke 4616c19a
 ```
 
 Each grant is a JSON file at
-`$COURT_ROOT/projects/<p>/grants/<id>.json` — durable across
-daemon restarts (no in-memory state to lose); `revoke` deletes
-the file. The daemon re-reads `grants/` on every inbound
-request, so a fresh `mint`/`revoke` takes effect on the next
-message with **no daemon reload**.
+`$COURT_ROOT/projects/<p>/grants/<id>.json`, written atomically
+(`tempfile + os.replace`) so a daemon reading the directory never
+sees a half-written record. Durable across restarts — no
+in-memory state to lose. The daemon re-reads `grants/` on every
+inbound request, so a fresh `mint` / `revoke` / consumption takes
+effect on the next message with **no daemon reload**.
+
+Field reference (the on-disk JSON shape):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | 8 hex chars; doubles as filename. |
+| `grant_type` | `"path"` \| `"tier"` | Which knob this grant turns. |
+| `granted_to` | string | Peer `court_id`. Must match `from_court` on inbound. |
+| `paths` | list[string] | (path grant) globs OR'd into `allow_paths`. |
+| `target_tier` | string | (tier grant) `tier_a` / `tier_b` / `tier_c`. |
+| `consume_on_use` | bool | (tier grant) if true, marks consumed after first hit. |
+| `consumed_ts` | string \| null | When the once-grant fired. Null until then. |
+| `issued_ts` / `expires_ts` | string (ISO 8601) | TTL boundaries. |
+| `issued_by` | string ≤ 128 | Free-form audit tag (`$USER@$HOST`). |
+| `hit_count` | int | How many inbound messages have matched this grant. |
+| `last_hit_ts` | string \| null | Timestamp of the most recent match. |
 
 The same surface is exposed via MCP for upstream LLMs that have
 been delegated this authority:
@@ -346,15 +391,53 @@ grant_peer_access(
     paths=["notes/**"],
     ttl="1h",
 )
-# → {granted_to: "bob-laptop-example", id: "...",
-#    issued_ts: "...", expires_ts: "...", paths: [...]}
+# → {project, id, grant_type: "path", granted_to, paths, ...,
+#    hit_count: 0, remaining_seconds: 3600}
+
+grant_peer_tier(
+    project="example",
+    peer_court_id="bob-laptop-example",
+    target_tier="tier_c",
+    consume_on_use=True,
+)
+# → {project, id, grant_type: "tier", target_tier, consume_on_use, ...}
 
 list_grants(project="example")
-# → {project, active: [...], expired: [...]}
+# → {project, active: [...], expired: [...]} (each entry includes
+#   grant_type, hit_count, remaining_seconds)
+
+grant_info(project="example", grant_id="4616c19a")
+# → {state: "active"|"expired", ...full record...}
 
 revoke_grant(project="example", grant_id="4616c19a")
-# → {ok: true, grant_id: "4616c19a"}
+# → {ok: true, result: "revoked", grant_id}
+# Errors: invalid_id | not_found | io_error
 ```
+
+#### Safety properties (worth knowing before you delegate the MCP tool)
+
+- **Path containment.** Every grant entry point validates `project`
+  as a safe filesystem component AND verifies the resolved
+  directory lives strictly inside `$COURT_ROOT/projects/`. A caller
+  supplying `project="../foo"` gets an error instead of arbitrary
+  filesystem access.
+- **TTL cap.** `parse_ttl` rejects values past 1 year so datetime
+  arithmetic can never overflow; MCP/CLI surface that as a clean
+  `invalid_argument` error.
+- **Strict JSON schema.** Grant files are parsed strictly on read;
+  missing fields, wrong types, or oversized payloads
+  (> 64 KB) are skipped with a warning to `logs/peer-errors.log`
+  rather than silently honored.
+- **Atomic writes.** Mint / record_hit / mark_consumed all use
+  same-directory tempfile + `os.replace`, so a reader iterating
+  `glob("*.json")` either sees the old content or the new content,
+  never a torn write.
+- **Peer existence check (MCP).** `grant_peer_access` /
+  `grant_peer_tier` decline to mint when `peers.yaml` is present
+  and the named `peer_court_id` isn't in it (prevents typo-driven
+  "orphan" grants that would silently activate if the peer ever
+  joined later). The CLI is loose by design — for bootstrap-time
+  use before `peers.yaml` is wired up.
 
 When an inbound `attaches:` path is covered by an active grant
 (and not by `allow_paths` already), the decision's `reasons`

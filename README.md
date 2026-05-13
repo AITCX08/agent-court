@@ -197,7 +197,8 @@ Claude Code now sees the full local-MCP toolset:
 | `list_peers(project)` | The user asks about federation status for a project. |
 | `dispatch_to_peer(project, peer_court_id, message, ...)` | The user wants to forward something to a federated court. |
 | `grant_peer_access(project, peer_court_id, paths, ttl?)` | The user wants to temporarily widen what a peer's `attaches:` may reference. |
-| `list_grants(project)` / `revoke_grant(project, id)` | The user wants to inspect or kill an outstanding grant. |
+| `grant_peer_tier(project, peer_court_id, target_tier, ttl?, consume_on_use?)` | The user wants to bump a peer's tier (e.g. `tier_a` → `tier_c`) for a window or a single message. |
+| `list_grants(project)` / `grant_info(project, id)` / `revoke_grant(project, id)` | The user wants to inspect or kill an outstanding grant. |
 
 Local MCP tools have **full machine access** — they read and write
 anywhere under `$COURT_ROOT/projects/<p>/`. The restriction surface lives
@@ -310,27 +311,53 @@ example with the `attaches:` field.
 
 When `allow_paths` is too narrow for a one-off ("Bob, look at
 `notes/q2-plan.md` real quick"), the receiver can mint a
-time-bounded, peer-scoped widening of the allow list — a sudo
-moment, not a config change. Hardcoded denies still win; this
-only widens `allow_paths`.
+time-bounded, peer-scoped grant — a sudo moment, not a config change.
+
+Two grant types, distinguished by `grant_type`:
+
+| Type | Widens... | Use when |
+|---|---|---|
+| `path` (default) | `allow_paths` | one-off attach outside the configured whitelist |
+| `tier` | the peer's `policy_tier` for the soft layer | want to wave through a single tier_a/b message without editing peers.yaml |
+
+Hardcoded denies, user `deny_paths`, and `HARDCODED_KEYWORDS` always
+still win. Grants can only *add* capabilities, never subtract.
 
 ```bash
-# 30-minute grant for Bob to attach anything under notes/
+# Path grant — 30 min for Bob to attach anything under notes/
 court-grant example bob "notes/**"
-# explicit TTL — accepts 30m / 1h / 2h30m / 1d / bare seconds
 court-grant example bob "shared/draft-*.md" --ttl 2h
 
-court-grant example list
-# STATE   ID         PEER  EXPIRES                  PATHS
-# active  4616c19a   bob   2026-05-11T22:53:00+...  notes/**
+# Tier grant — upgrade Bob to tier_c for one message only
+court-grant example bob --tier tier_c --once
 
+# Tier grant — upgrade for an hour
+court-grant example bob --tier tier_c --ttl 1h
+
+court-grant example list
+# STATE     T ID         PEER  EXPIRES                  HITS DETAIL
+# active    P 4616c19a   bob   2026-05-13T22:53:00+...  0    notes/**
+# active    T 7fa20bd8   bob   2026-05-13T23:00:00+...  0    →tier_c [once]
+
+court-grant example info 4616c19a       # full record + remaining time + hit count
 court-grant example revoke 4616c19a
 ```
 
-Grants are JSON files under `$COURT_ROOT/projects/<p>/grants/` —
-durable across daemon restarts; `revoke` deletes the file. From an
-upstream LLM the same surface is exposed as
-`grant_peer_access` / `list_grants` / `revoke_grant`.
+The `T` column is `P` for path grants, `T` for tier grants. `info`
+shows `state`, `remaining`, `hit_count`, `last_hit_ts`, and
+(for once-grants) `consumed_ts`.
+
+Grants are JSON files under `$COURT_ROOT/projects/<p>/grants/`,
+written atomically and validated on read (oversize / malformed
+files are skipped with a warning to `logs/peer-errors.log`).
+Durable across daemon restarts; `revoke` deletes the file. From an
+upstream LLM the same surface is exposed as `grant_peer_access` /
+`grant_peer_tier` / `grant_info` / `list_grants` / `revoke_grant`.
+
+The `project` argument on every grant entry point is validated for
+filesystem-component safety AND containment under
+`$COURT_ROOT/projects/`. Passing `project="../foo"` returns an error
+rather than reading from outside the projects root.
 
 For a full two-machine walk-through see [docs/lan-deployment.md](./docs/lan-deployment.md).
 
@@ -429,8 +456,11 @@ Early. PR-1 (HTTP + identity + signed dispatch + role whitelist),
 PR-2 (policy engine + path-level allow/deny + sensitive-keyword
 filter + pending-approval bin), PR-3 (LLM judge for the `tier_b`
 branch, with fail-safe fallback to human_required), and PR-4
-(sudo-style temporary path grants — peer-scoped, time-bounded
-widening of `allow_paths`, via `court-grant` + MCP) are working
-but lightly tested. PR-5 (multi-channel human approval: terminal
-+ FeiShu + WeChat) and PR-6 (IM redundancy) are next. Bug reports
+(sudo-style temporary grants — peer-scoped, time-bounded grants
+that widen `allow_paths` (path grants) or override the soft tier
+(tier grants, with optional `--once` semantics), via `court-grant`
++ MCP; hardened against path traversal, atomic writes, strict
+JSON validation) are working with 150+ tests. PR-5 (multi-channel
+human approval: terminal + FeiShu + WeChat) and PR-6 (IM
+redundancy) are next. Bug reports
 and prompts for new role archetypes welcome — open an issue.

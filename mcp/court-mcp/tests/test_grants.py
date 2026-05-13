@@ -173,14 +173,14 @@ def test_list_grants_returns_sorted_by_issue_time(root_dir):
 def test_revoke_removes_file(root_dir):
     _seed(root_dir, "p")
     g = grants.mint_grant("p", "bob", ["x.md"], ttl="30m")
-    assert grants.revoke_grant("p", g.id) is True
-    assert grants.revoke_grant("p", g.id) is False  # idempotent
+    assert grants.revoke_grant("p", g.id) == "revoked"
+    assert grants.revoke_grant("p", g.id) == "not_found"  # idempotent
     assert grants.list_grants("p") == []
 
 
 def test_revoke_rejects_unsafe_id(root_dir):
     _seed(root_dir, "p")
-    assert grants.revoke_grant("p", "../../etc") is False
+    assert grants.revoke_grant("p", "../../etc") == "invalid_id"
 
 
 def test_load_active_grants_filters_expired(root_dir):
@@ -371,7 +371,7 @@ def test_e2e_revoke_takes_effect_immediately(project_with_self_peer):
     assert body["decision"] == "auto_pass"
 
     # Revoke and try again with a fresh id (replay cache would otherwise reject)
-    assert grants.revoke_grant("p", g.id) is True
+    assert grants.revoke_grant("p", g.id) == "revoked"
     msg2 = _signed(identity, attaches=["notes/x.md"])
     _, body2 = _round_trip("p", msg2)
     assert body2["decision"] == "human_required"
@@ -394,3 +394,410 @@ def test_e2e_grant_still_respects_hardcoded_deny(project_with_self_peer):
     msg = _signed(identity, attaches=[".ssh/id_rsa"])
     _, body = _round_trip("p", msg)
     assert body["decision"] == "denied"
+
+
+# ---------------------------------------------------------------------------
+# PR-4.1 — path containment (Critical from review)
+# ---------------------------------------------------------------------------
+
+
+def test_project_traversal_rejected_in_mint(root_dir):
+    """``project="../foo"`` must not let mint write outside COURT_ROOT/projects."""
+    with pytest.raises(ValueError):
+        grants.mint_grant("../shared", "bob", ["x.md"], ttl="30m")
+
+
+def test_project_traversal_rejected_in_list(root_dir):
+    with pytest.raises(ValueError):
+        grants.list_grants("../shared")
+
+
+def test_project_traversal_rejected_in_revoke(root_dir):
+    with pytest.raises(ValueError):
+        grants.revoke_grant("../shared", "deadbeef")
+
+
+def test_project_traversal_rejected_in_find(root_dir):
+    with pytest.raises(ValueError):
+        grants.find_grant("../shared", "deadbeef")
+
+
+def test_project_unsafe_component_rejected(root_dir):
+    with pytest.raises(ValueError):
+        grants.mint_grant("foo/bar", "bob", ["x.md"], ttl="30m")
+
+
+# ---------------------------------------------------------------------------
+# PR-4.1 — TTL bounds (Warning from review)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_ttl_rejects_overflow():
+    with pytest.raises(ValueError):
+        grants.parse_ttl(10**12)
+    with pytest.raises(ValueError):
+        grants.parse_ttl(f"{10**9}d")
+
+
+def test_parse_ttl_accepts_max():
+    assert grants.parse_ttl(grants.MAX_TTL_SECONDS) == grants.MAX_TTL_SECONDS
+
+
+def test_mint_with_huge_ttl_raises_value_error(root_dir):
+    _seed(root_dir, "p")
+    with pytest.raises(ValueError):
+        grants.mint_grant("p", "bob", ["x.md"], ttl="9999d")
+
+
+# ---------------------------------------------------------------------------
+# PR-4.1 — atomic write + corrupted JSON (Warning + Info from review)
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_no_dotfiles_match_glob(root_dir):
+    """Temp files used by atomic-write must not appear in list_grants."""
+    _seed(root_dir, "p")
+    grants.mint_grant("p", "bob", ["x.md"], ttl="30m")
+    # Drop a tempfile-style stray that should be ignored.
+    stray = grants.grants_dir("p") / ".some-write-in-progress.json"
+    stray.write_text("{half written")
+    rows = grants.list_grants("p")
+    assert len(rows) == 1
+
+
+def test_corrupted_json_skipped_and_logged(root_dir):
+    _seed(root_dir, "p")
+    g = grants.mint_grant("p", "bob", ["x.md"], ttl="30m")
+    # Append garbage to the file → JSON parse error.
+    p = grants.grants_dir("p") / f"{g.id}.json"
+    p.write_text("{ not json")
+    rows = grants.list_grants("p")
+    assert rows == []
+    log = peer_lib.project_peer_errors_log("p")
+    assert log.is_file()
+    assert "schema mismatch" in log.read_text() or "unparseable" in log.read_text()
+
+
+def test_oversize_grant_file_skipped(root_dir):
+    _seed(root_dir, "p")
+    p = grants.grants_dir("p")
+    p.mkdir(parents=True, exist_ok=True)
+    huge = p / "huge.json"
+    huge.write_text("x" * (grants.MAX_GRANT_FILE_BYTES + 100))
+    assert grants.list_grants("p") == []
+
+
+def test_strict_schema_rejects_non_string_paths(root_dir):
+    _seed(root_dir, "p")
+    g = grants.mint_grant("p", "bob", ["x.md"], ttl="30m")
+    p = grants.grants_dir("p") / f"{g.id}.json"
+    raw = json.loads(p.read_text())
+    raw["paths"] = [1, 2, 3]
+    p.write_text(json.dumps(raw))
+    assert grants.list_grants("p") == []
+
+
+def test_strict_schema_rejects_bad_grant_type(root_dir):
+    _seed(root_dir, "p")
+    g = grants.mint_grant("p", "bob", ["x.md"], ttl="30m")
+    p = grants.grants_dir("p") / f"{g.id}.json"
+    raw = json.loads(p.read_text())
+    raw["grant_type"] = "wizard"
+    p.write_text(json.dumps(raw))
+    assert grants.list_grants("p") == []
+
+
+# ---------------------------------------------------------------------------
+# PR-4.1 — tier_grants
+# ---------------------------------------------------------------------------
+
+
+def test_mint_tier_grant_roundtrip(root_dir):
+    _seed(root_dir, "p")
+    g = grants.mint_tier_grant("p", "bob", "tier_c", ttl="1h", consume_on_use=True)
+    assert g.grant_type == "tier"
+    assert g.target_tier == "tier_c"
+    assert g.consume_on_use is True
+    assert g.paths == []
+    # Persisted shape
+    p = grants.grants_dir("p") / f"{g.id}.json"
+    raw = json.loads(p.read_text())
+    assert raw["grant_type"] == "tier"
+    assert raw["target_tier"] == "tier_c"
+    assert raw["consume_on_use"] is True
+
+
+def test_mint_tier_grant_rejects_bad_tier(root_dir):
+    _seed(root_dir, "p")
+    with pytest.raises(ValueError):
+        grants.mint_tier_grant("p", "bob", "tier_z", ttl="1h")
+
+
+def test_tier_grant_upgrades_peer_in_policy_eval():
+    g = grants.Grant(
+        id="tg1", granted_to="bob",
+        issued_ts="2026-01-01T00:00:00+08:00",
+        expires_ts="2099-01-01T00:00:00+08:00",
+        grant_type="tier", target_tier="tier_c",
+    )
+    msg = _msg(attaches=[])
+    # peer_tier=tier_a normally → human_required. Grant upgrades to tier_c.
+    d = policy.evaluate(
+        msg, peer_tier="tier_a", policy=policy.PolicyConfig(),
+        allow_paths=[], deny_paths=[],
+        tier_grant=g,
+    )
+    assert d.action == "auto_pass"
+    assert d.tier == "tier_c"
+    assert "tg1" in d.grant_hits
+
+
+def test_tier_grant_does_not_downgrade():
+    """A tier_a target grant on a tier_c peer must NOT lower the tier."""
+    g = grants.Grant(
+        id="tg1", granted_to="bob",
+        issued_ts="2026-01-01T00:00:00+08:00",
+        expires_ts="2099-01-01T00:00:00+08:00",
+        grant_type="tier", target_tier="tier_a",
+    )
+    d = policy.evaluate(
+        _msg(attaches=[]), peer_tier="tier_c", policy=policy.PolicyConfig(),
+        allow_paths=[], deny_paths=[],
+        tier_grant=g,
+    )
+    assert d.action == "auto_pass"          # tier_c retained
+    assert d.tier == "tier_c"
+    assert d.grant_hits == []               # grant did not fire
+
+
+def test_tier_grant_does_not_bypass_hardcoded_deny():
+    g = grants.Grant(
+        id="tg1", granted_to="bob",
+        issued_ts="2026-01-01T00:00:00+08:00",
+        expires_ts="2099-01-01T00:00:00+08:00",
+        grant_type="tier", target_tier="tier_c",
+    )
+    d = policy.evaluate(
+        _msg(attaches=[".ssh/id_rsa"]),
+        peer_tier="tier_a", policy=policy.PolicyConfig(),
+        allow_paths=[], deny_paths=[],
+        tier_grant=g,
+    )
+    assert d.action == "denied"
+
+
+def test_path_grant_does_not_change_tier():
+    """Path grants only touch allow_paths; they leave tier alone."""
+    g = grants.Grant(
+        id="pg1", granted_to="bob",
+        issued_ts="2026-01-01T00:00:00+08:00",
+        expires_ts="2099-01-01T00:00:00+08:00",
+        grant_type="path", paths=["notes/**"],
+    )
+    d = policy.evaluate(
+        _msg(attaches=[]), peer_tier="tier_a", policy=policy.PolicyConfig(),
+        allow_paths=[], deny_paths=[],
+        path_grants=[g],
+    )
+    # tier_a still → human_required even with a path grant present
+    assert d.action == "human_required"
+
+
+def test_load_effective_tier_grant_picks_highest(root_dir):
+    _seed(root_dir, "p")
+    grants.mint_tier_grant("p", "bob", "tier_b", ttl="1h")
+    grants.mint_tier_grant("p", "bob", "tier_c", ttl="1h")
+    g = grants.load_effective_tier_grant("p", "bob")
+    assert g is not None
+    assert g.target_tier == "tier_c"
+
+
+def test_load_effective_tier_grant_isolates_peer(root_dir):
+    _seed(root_dir, "p")
+    grants.mint_tier_grant("p", "alice", "tier_c", ttl="1h")
+    assert grants.load_effective_tier_grant("p", "alice").target_tier == "tier_c"
+    assert grants.load_effective_tier_grant("p", "bob") is None
+
+
+# ---------------------------------------------------------------------------
+# PR-4.1 — consume_on_use + hit tracking
+# ---------------------------------------------------------------------------
+
+
+def test_record_hit_increments(root_dir):
+    _seed(root_dir, "p")
+    g = grants.mint_grant("p", "bob", ["x.md"], ttl="1h")
+    assert grants.record_hit("p", g.id) is True
+    assert grants.record_hit("p", g.id) is True
+    g2 = grants.find_grant("p", g.id)
+    assert g2.hit_count == 2
+    assert g2.last_hit_ts is not None
+
+
+def test_mark_consumed_makes_inactive(root_dir):
+    _seed(root_dir, "p")
+    g = grants.mint_tier_grant("p", "bob", "tier_c", ttl="1h", consume_on_use=True)
+    assert g.is_active() is True
+    assert grants.mark_consumed("p", g.id) is True
+    g2 = grants.find_grant("p", g.id)
+    assert g2.consumed_ts is not None
+    assert g2.is_active() is False
+    # And load_effective_tier_grant must skip it
+    assert grants.load_effective_tier_grant("p", "bob") is None
+
+
+def test_e2e_consume_on_use_fires_exactly_once(project_with_self_peer):
+    """A tier grant with consume_on_use should let exactly one message
+    through; the next falls back to the peer's configured tier."""
+    identity = project_with_self_peer
+    # Peer is tier_c in the fixture — change to tier_a so we see the upgrade.
+    peers_yaml = peer_lib.project_peers_yaml_path("p")
+    raw = yaml.safe_load(peers_yaml.read_text())
+    raw["peers"][0]["policy_tier"] = "tier_a"
+    peers_yaml.write_text(yaml.safe_dump(raw))
+
+    g = grants.mint_tier_grant("p", "bob", "tier_c", ttl="1h", consume_on_use=True)
+
+    # First message — should hit the grant and auto_pass.
+    msg1 = _signed(identity, attaches=["bus/foreman/inbox/x.md"])
+    _, body1 = _round_trip("p", msg1)
+    assert body1["decision"] == "auto_pass"
+
+    # Grant should now be consumed.
+    after = grants.find_grant("p", g.id)
+    assert after.consumed_ts is not None
+
+    # Second message — no live grant left, falls back to tier_a → human_required.
+    msg2 = _signed(identity, attaches=["bus/foreman/inbox/y.md"])
+    _, body2 = _round_trip("p", msg2)
+    assert body2["decision"] == "human_required"
+
+
+# ---------------------------------------------------------------------------
+# PR-4.1 — CLI argv reorder robustness
+# ---------------------------------------------------------------------------
+
+
+def test_cli_reorder_handles_implicit_add():
+    import grant_cli as gc
+    assert gc._reorder_argv(["p", "bob", "x.md"]) == ["add", "p", "bob", "x.md"]
+
+
+def test_cli_reorder_handles_explicit_subcmd():
+    import grant_cli as gc
+    assert gc._reorder_argv(["p", "list"]) == ["list", "p"]
+    assert gc._reorder_argv(["p", "info", "abc"]) == ["info", "p", "abc"]
+    assert gc._reorder_argv(["p", "revoke", "abc"]) == ["revoke", "p", "abc"]
+
+
+def test_cli_reorder_keeps_flags_in_place():
+    import grant_cli as gc
+    # Implicit add with trailing flag — flag should ride along.
+    assert gc._reorder_argv(["p", "bob", "x.md", "--ttl", "1h"]) == [
+        "add", "p", "bob", "x.md", "--ttl", "1h",
+    ]
+
+
+def test_cli_reorder_tier_flag_implicit_add():
+    import grant_cli as gc
+    # No paths, tier grant via flag
+    assert gc._reorder_argv(["p", "bob", "--tier", "tier_c"]) == [
+        "add", "p", "bob", "--tier", "tier_c",
+    ]
+
+
+def test_cli_info_smoke(root_dir, capsys):
+    import grant_cli as gc
+    _seed(root_dir, "p")
+    g = grants.mint_grant("p", "bob", ["notes/**"], ttl="1h")
+    rc = gc.main(["p", "info", g.id])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "state         : active" in out
+    assert "grant_type    : path" in out
+    assert g.id in out
+    assert "remaining     :" in out
+
+
+def test_cli_info_handles_missing(root_dir, capsys):
+    import grant_cli as gc
+    _seed(root_dir, "p")
+    rc = gc.main(["p", "info", "deadbeef"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "no such grant" in err
+
+
+def test_cli_revoke_io_split(root_dir, capsys):
+    import grant_cli as gc
+    _seed(root_dir, "p")
+    rc = gc.main(["p", "revoke", "deadbeef"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "no such grant" in err
+
+    rc = gc.main(["p", "revoke", "../../etc"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "invalid grant id" in err
+
+
+def test_cli_tier_grant_via_flag(root_dir, capsys):
+    import grant_cli as gc
+    _seed(root_dir, "p")
+    rc = gc.main(["p", "bob", "--tier", "tier_c", "--once"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "grant_type    : tier" in out
+    assert "target_tier   : tier_c" in out
+    assert "consume_on_use: True" in out
+    rows = grants.list_grants("p")
+    assert len(rows) == 1
+    assert rows[0].grant_type == "tier"
+
+
+def test_cli_rejects_once_without_tier(root_dir, capsys):
+    import grant_cli as gc
+    _seed(root_dir, "p")
+    rc = gc.main(["p", "bob", "x.md", "--once"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "--once" in err
+
+
+# ---------------------------------------------------------------------------
+# PR-4.1 — grant_paths None robustness (gemini Info)
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_handles_none_grant_paths():
+    """Passing grant_paths=None must not raise."""
+    msg = _msg(attaches=["bus/foreman/inbox/x.md"])
+    d = policy.evaluate(
+        msg, peer_tier="tier_c", policy=policy.PolicyConfig(),
+        allow_paths=["bus/foreman/inbox/**"],
+        deny_paths=[],
+        grant_paths=None,
+    )
+    assert d.action == "auto_pass"
+
+
+def test_evaluate_handles_none_path_grants():
+    msg = _msg(attaches=[])
+    d = policy.evaluate(
+        msg, peer_tier="tier_c", policy=policy.PolicyConfig(),
+        allow_paths=[], deny_paths=[],
+        path_grants=None, tier_grant=None,
+    )
+    assert d.action == "auto_pass"
+
+
+# ---------------------------------------------------------------------------
+# PR-4.1 — issued_by truncation (gemini Info)
+# ---------------------------------------------------------------------------
+
+
+def test_issued_by_truncated_to_128(root_dir):
+    _seed(root_dir, "p")
+    g = grants.mint_grant("p", "bob", ["x.md"], ttl="30m", issued_by="x" * 500)
+    assert len(g.issued_by) == 128
