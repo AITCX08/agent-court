@@ -372,6 +372,35 @@ def test_wechat_channel_invokes_cc_connect_send(root_dir):
     assert call["env"]["CC_SESSION_KEY"] == "sess-abc"
 
 
+def test_wechat_channel_session_key_optional(root_dir):
+    """Empty session_key is fine — cc-connect picks the first active session."""
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    cfg = bangjiao.ShenpiConfig(
+        enabled=True, channels=["wechat"],
+        wechat=bangjiao.WechatChannelConfig(
+            cc_connect_bin="cc-connect",
+            cc_connect_project="k2work",
+            cc_connect_session_key="",   # left blank
+        ),
+    )
+    captured = []
+
+    async def _fake_exec(*args, env=None, **kwargs):
+        captured.append({"args": args, "env": env})
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        proc.returncode = 0
+        return proc
+
+    with patch("shutil.which", return_value="/usr/local/bin/cc-connect"), \
+         patch("asyncio.create_subprocess_exec", _fake_exec):
+        out = asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    assert out["wechat"] == "ok"
+    assert "--session" not in captured[0]["args"]
+    assert "CC_SESSION_KEY" not in captured[0]["env"]
+
+
 def test_wechat_channel_missing_binary_recorded_as_failure(root_dir):
     pdir = _seed(root_dir, "p")
     item = _make_item(pdir)
