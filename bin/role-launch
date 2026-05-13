@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# agent-court — launch a single role's LLM CLI for a court inside the current tmux window.
+# Called by court-up; can also be invoked manually for debugging:
+#   role-launch <project> <role-name>
+set -e
+
+PROJECT="${1:-}"
+ROLE="${2:-}"
+
+if [ -z "$PROJECT" ] || [ -z "$ROLE" ]; then
+  echo "[role-launch] usage: role-launch <project> <role-name>" >&2
+  exit 1
+fi
+
+ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+PROJ_ROOT="$ROOT/projects/$PROJECT"
+CFG="$PROJ_ROOT/court.yaml"
+
+[ -f "$CFG" ] || { echo "[role-launch] missing $CFG" >&2; exit 1; }
+
+# Resolve role config (prompt file, work dir, model, cli command)
+PROMPT_FILE=$(yq -r ".roles[] | select(.name == \"$ROLE\") | .prompt" "$CFG")
+WORK_DIR=$(yq -r ".roles[] | select(.name == \"$ROLE\") | .work_dir" "$CFG")
+MODEL=$(yq -r ".roles[] | select(.name == \"$ROLE\") | .model" "$CFG")
+ROLE_CLI=$(yq -r ".roles[] | select(.name == \"$ROLE\") | .cli" "$CFG")
+
+if [ -z "$PROMPT_FILE" ] || [ "$PROMPT_FILE" = "null" ]; then
+  echo "[role-launch] role '$ROLE' not found in project '$PROJECT' court.yaml" >&2
+  exit 1
+fi
+
+PROMPT_PATH="$PROJ_ROOT/prompts/$PROMPT_FILE"
+if [ ! -f "$PROMPT_PATH" ]; then
+  echo "[role-launch] prompt file $PROMPT_PATH not found" >&2
+  exit 1
+fi
+
+# Determine the LLM CLI to use: role-level override > project default > "claude"
+if [ -z "$ROLE_CLI" ] || [ "$ROLE_CLI" = "null" ]; then
+  ROLE_CLI=$(yq -r '.default_cli // "claude"' "$CFG")
+fi
+
+if [ -n "$WORK_DIR" ] && [ "$WORK_DIR" != "null" ] && [ -d "$WORK_DIR" ]; then
+  cd "$WORK_DIR"
+fi
+
+# Build args. By convention each CLI is invoked with:
+#   <cli> --append-system-prompt "$(cat <prompt>)" [--model <model>]
+#
+# If your CLI uses different flags, override with `cli` per role in court.yaml
+# (e.g. set cli to a wrapper script that knows the right flags).
+CLI_ARGS=( "--append-system-prompt" "$(cat "$PROMPT_PATH")" )
+[ -n "$MODEL" ] && [ "$MODEL" != "null" ] && CLI_ARGS+=( "--model" "$MODEL" )
+
+echo "[role-launch] project=$PROJECT role=$ROLE cli=$ROLE_CLI work_dir=$(pwd) prompt=$PROMPT_FILE"
+exec "$ROLE_CLI" "${CLI_ARGS[@]}"

@@ -1,0 +1,50 @@
+# agent-court policy engine configuration — example
+#
+# Real file lives at $COURT_ROOT/projects/<project>/policy.yaml.
+# Missing file = defaults (default_tier: tier_b, no extra keywords).
+#
+# Three tiers map to actions taken when an inbound peer message arrives
+# (AFTER signature + role-whitelist already passed):
+#
+#   tier_a → human_required   park in bus/<peer>/pending-approval/, do
+#                             NOT deliver. Wait for a human to mv into
+#                             inbox/. PR-5 will add FeiShu/WeChat
+#                             notifications for this branch.
+#
+#   tier_b → judge            PR-2 stub passes through to inbox/ with a
+#                             warning log. PR-3 will replace this with
+#                             an llm_judge call.
+#
+#   tier_c → auto_pass        drop straight into bus/<peer>/inbox/.
+#                             Trust the peer; let foreman handle it.
+#
+# Per-peer override: in peers.yaml, you can pin `policy_tier: tier_a`
+# on a specific peer entry; that overrides default_tier for just that
+# peer.
+#
+# HARD RULES — written in code, NOT overridable here:
+#   * Paths matching **/.ssh/**, **/.env, **/id_rsa*, /etc/**,
+#     **/credentials.json, **/secrets/**, **/.aws/**, **/.kube/config
+#     → denied (filed under bus/<peer>/denied/, never reaches foreman)
+#   * Body containing api_key, password, secret, token, sk-, AKIA, etc.
+#     → forced to human_required regardless of tier
+#   * deny_paths / allow_paths from court.yaml are also enforced here:
+#     deny match → denied; allow_paths non-empty + attach not covered
+#     → forced to human_required
+#
+# Audit: every decision is appended to logs/policy-log.jsonl with the
+# action, tier, and a list of reasons. Tail it to see what's happening:
+#   tail -f $COURT_ROOT/projects/<project>/logs/policy-log.jsonl
+
+# Default tier when peers.yaml doesn't pin one for the sender.
+# Conservative: tier_b means new peers go through judge by default.
+default_tier: tier_b
+
+# Extra keywords appended to the built-in list (case-insensitive
+# substring match). Use this for project-specific terms you want a
+# human to eyeball before delivery — e.g. customer names, project
+# codenames, billing identifiers.
+sensitive_keywords:
+  - "wire transfer"
+  - "merger"
+  - "acquisition"

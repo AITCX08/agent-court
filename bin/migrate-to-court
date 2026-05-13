@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# agent-court — migrate-to-court: roll a v0.2 (yamen) runtime back to
+# v0.3 (court) schema.
+#
+# Performs the following transforms under $COURT_ROOT (default
+# ~/.agent-court, falling back to ~/.agent-yamen if the new dir doesn't
+# exist):
+#
+#   - rename ~/.agent-yamen        → ~/.agent-court
+#   - per project under projects/<p>/:
+#       yamen.yaml                 → court.yaml          (and key 'bangjiao:' → 'federation:',
+#                                                          'tuiguan:' → 'judge:',
+#                                                          'shenpi:' → 'approvals:')
+#       bangjiao.yaml              → peers.yaml          (and 'yamen_id:' → 'court_id:')
+#       lvli.yaml                  → policy.yaml
+#       prompts/zongguan.md        → prompts/foreman.md
+#       bus/zongguan/              → bus/foreman/
+#       logs/panduo.jsonl          → logs/policy-log.jsonl
+#       logs/bangjiao-errors.log   → logs/peer-errors.log
+#       logs/shenpi-log.jsonl      → logs/approval-log.jsonl
+#       (inside court.yaml) name/attach_window/prompt: zongguan → foreman
+#                            session: yamen-X → court-X
+#
+# Idempotent: re-running on already-migrated dirs is a no-op.
+# Pre-flight: interactive unless --yes; --dry-run shows what would change.
+#
+# Usage:
+#   migrate-to-court                 # interactive
+#   migrate-to-court --yes           # non-interactive
+#   migrate-to-court --dry-run       # preview only
+
+set -e
+
+DRY=0
+YES=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY=1;;
+    --yes|-y)  YES=1;;
+    -h|--help)
+      head -28 "$0" | sed 's/^# \?//'; exit 0;;
+  esac
+done
+
+OLD_ROOT="${HOME}/.agent-yamen"
+NEW_ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+
+say() { echo "[migrate-to-court] $*"; }
+do_or_say() { if [ $DRY -eq 1 ]; then say "DRY: $*"; else eval "$*"; fi; }
+
+# 1. Rename top-level dir if needed.
+if [ -d "$OLD_ROOT" ] && [ ! -e "$NEW_ROOT" ]; then
+  say "will mv $OLD_ROOT → $NEW_ROOT"
+  if [ $YES -eq 0 ] && [ $DRY -eq 0 ]; then
+    read -p "[migrate-to-court] proceed with whole-tree migration? (y/N) " ans
+    [ "$ans" = "y" ] || { say "aborted"; exit 1; }
+  fi
+  do_or_say "mv \"$OLD_ROOT\" \"$NEW_ROOT\""
+elif [ -d "$NEW_ROOT" ] && [ -d "$OLD_ROOT" ]; then
+  say "warning: both $OLD_ROOT and $NEW_ROOT exist — leaving old root alone."
+fi
+
+ROOT="$NEW_ROOT"
+[ -d "$ROOT/projects" ] || { say "nothing to migrate (no $ROOT/projects)"; exit 0; }
+
+# 2. Per-project migrations.
+for pdir in "$ROOT"/projects/*/; do
+  proj="$(basename "$pdir")"
+  say "--- project: $proj ---"
+
+  # File renames (only if source exists AND target doesn't, for idempotency).
+  if [ -f "$pdir/yamen.yaml" ] && [ ! -f "$pdir/court.yaml" ]; then
+    do_or_say "mv \"$pdir/yamen.yaml\" \"$pdir/court.yaml\""
+  fi
+  if [ -f "$pdir/bangjiao.yaml" ] && [ ! -f "$pdir/peers.yaml" ]; then
+    do_or_say "mv \"$pdir/bangjiao.yaml\" \"$pdir/peers.yaml\""
+  fi
+  if [ -f "$pdir/lvli.yaml" ] && [ ! -f "$pdir/policy.yaml" ]; then
+    do_or_say "mv \"$pdir/lvli.yaml\" \"$pdir/policy.yaml\""
+  fi
+  if [ -f "$pdir/prompts/zongguan.md" ] && [ ! -f "$pdir/prompts/foreman.md" ]; then
+    do_or_say "mv \"$pdir/prompts/zongguan.md\" \"$pdir/prompts/foreman.md\""
+  fi
+  if [ -d "$pdir/bus/zongguan" ] && [ ! -d "$pdir/bus/foreman" ]; then
+    do_or_say "mv \"$pdir/bus/zongguan\" \"$pdir/bus/foreman\""
+  fi
+  # Log renames are best-effort (logs may not exist yet for a fresh project).
+  if [ -f "$pdir/logs/panduo.jsonl" ] && [ ! -f "$pdir/logs/policy-log.jsonl" ]; then
+    do_or_say "mv \"$pdir/logs/panduo.jsonl\" \"$pdir/logs/policy-log.jsonl\""
+  fi
+  if [ -f "$pdir/logs/bangjiao-errors.log" ] && [ ! -f "$pdir/logs/peer-errors.log" ]; then
+    do_or_say "mv \"$pdir/logs/bangjiao-errors.log\" \"$pdir/logs/peer-errors.log\""
+  fi
+  if [ -f "$pdir/logs/shenpi-log.jsonl" ] && [ ! -f "$pdir/logs/approval-log.jsonl" ]; then
+    do_or_say "mv \"$pdir/logs/shenpi-log.jsonl\" \"$pdir/logs/approval-log.jsonl\""
+  fi
+
+  # In-place YAML key + value swaps inside court.yaml / peers.yaml.
+  for f in "$pdir/court.yaml" "$pdir/peers.yaml" "$pdir/policy.yaml"; do
+    [ -f "$f" ] || continue
+    if [ $DRY -eq 1 ]; then
+      say "DRY: would sed $f"
+    else
+      sed -i '' '
+        s|^bangjiao:|federation:|
+        s|^  bangjiao:|  federation:|
+        s|^    tuiguan:|    judge:|
+        s|^  shenpi:|  approvals:|
+        s|^yamen_id:|court_id:|
+        s|^  yamen_id:|  court_id:|
+        s|^    yamen_id:|    court_id:|
+        s|name: zongguan$|name: foreman|
+        s|attach_window: zongguan$|attach_window: foreman|
+        s|prompt: zongguan\.md$|prompt: foreman.md|
+        s|^session: yamen-|session: court-|
+        s|^- zongguan$|- foreman|
+        s|    - zongguan$|    - foreman|
+      ' "$f" 2>/dev/null || true
+    fi
+  done
+done
+
+say "done."
+say ""
+say "next steps you may want to take:"
+say "  1. re-register the MCP server under its old/canonical name:"
+say "       claude mcp remove agent-yamen"
+say "       claude mcp add -s user agent-court \\"
+say "         \$HOME/Desktop/agent-court/mcp/court-mcp/.venv/bin/python \\"
+say "         \$HOME/Desktop/agent-court/mcp/court-mcp/server.py"
+say "  2. if you had a tmux session named 'yamen-<project>', rename it:"
+say "       tmux rename-session -t yamen-<project> court-<project>"
+say "  3. if you set YAMEN_ROOT in shell rc, switch back to COURT_ROOT."

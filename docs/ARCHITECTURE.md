@@ -2,24 +2,24 @@
 
 # 架构
 
-这份文档讲一条消息从头到尾在 `agent-yamen` 里的完整流动。如果说 `README.md`
+这份文档讲一条消息从头到尾在 `agent-court` 里的完整流动。如果说 `README.md`
 是电梯介绍，这份就是逐层楼的实地游览。
 
 ## 组件
 
 ```
-upstream LLM ── MCP stdio ── yamen-mcp ── 文件系统 ── qijuguan ── tmux ── role LLM CLI
+upstream LLM ── MCP stdio ── court-mcp ── 文件系统 ── court-watcher ── tmux ── role LLM CLI
 ```
 
 五个进程，没有"守护守护进程"的嵌套：
 
 1. **上游 LLM 客户端** —— 任何说 MCP 的程序。它持有"和人类用户"的关系
    （终端对话、消息桥、编辑器，随你）。
-2. **`yamen-mcp` 服务** —— Python（FastMCP）。作为上游 LLM 的子进程启动，
+2. **`court-mcp` 服务** —— Python（FastMCP）。作为上游 LLM 的子进程启动，
    在它加载 MCP servers 时跟着起。把工具调用翻译成文件写入。无状态。
-3. **文件系统总线** —— `$YAMEN_ROOT/projects/<p>/bus/<role>/{inbox,outbox}/`。
+3. **文件系统总线** —— `$COURT_ROOT/projects/<p>/bus/<role>/{inbox,outbox}/`。
    系统里**唯一**的持久状态。
-4. **`qijuguan` 守护进程** —— Bash + `fswatch`。每个 project 一份。
+4. **`court-watcher` 守护进程** —— Bash + `fswatch`。每个 project 一份。
    把 `outbox/<file>.md` 路由到 `bus/<to>/inbox/<file>.md`，
    追加 `event.log`，并通过 tmux 通知目标窗口。
 5. **Role LLM CLI** —— 每个 role 一份，跑在 project 的 tmux session 下的
@@ -31,7 +31,7 @@ upstream LLM ── MCP stdio ── yamen-mcp ── 文件系统 ── qijugu
 
 ```markdown
 ---
-from: zongguan
+from: foreman
 to: frontend
 ts: 2026-05-11T15:00:00+08:00
 id: 7f3d2e1a
@@ -47,7 +47,7 @@ in_reply_to: 5a2c1b0d        # 可选
 
 ## 端到端示例
 
-场景：上游 LLM（Claude Code）想让 `myproject` 的 zongguan 核对昨天的 PR 有没有破坏什么。
+场景：上游 LLM（Claude Code）想让 `myproject` 的 foreman 核对昨天的 PR 有没有破坏什么。
 
 ### 1. MCP 工具调用
 
@@ -57,7 +57,7 @@ Claude Code 发出：
 {
   "method": "tools/call",
   "params": {
-    "name": "chizhao_zongguan",
+    "name": "dispatch_to_foreman",
     "arguments": {
       "project": "myproject",
       "message": "Verify PR #42 didn't introduce regressions in the auth flow."
@@ -66,58 +66,58 @@ Claude Code 发出：
 }
 ```
 
-### 2. yamen-mcp 写一个文件
+### 2. court-mcp 写一个文件
 
-`yamen-mcp` 接到调用，写：
+`court-mcp` 接到调用，写：
 
 ```
-$YAMEN_ROOT/projects/myproject/bus/upstream/outbox/1715432400-7f3d2e1a-upstream-to-zongguan.md
+$COURT_ROOT/projects/myproject/bus/upstream/outbox/1715432400-7f3d2e1a-upstream-to-foreman.md
 ```
 
-frontmatter 是 `from: upstream`、`to: zongguan`、`id: 7f3d2e1a`。
+frontmatter 是 `from: upstream`、`to: foreman`、`id: 7f3d2e1a`。
 
-工具调用立即返回文件路径和 id。**不阻塞**等 zongguan。
+工具调用立即返回文件路径和 id。**不阻塞**等 foreman。
 
-### 3. qijuguan 路由它
+### 3. court-watcher 路由它
 
 `fswatch` 报新文件。watcher 解析 frontmatter：
 
 ```
-mv .../bus/upstream/outbox/<file>.md  →  .../bus/zongguan/inbox/<file>.md
+mv .../bus/upstream/outbox/<file>.md  →  .../bus/foreman/inbox/<file>.md
 追加 .../shared/event.log:
-  2026-05-11T15:00:00+08:00 | upstream -> zongguan | id=7f3d2e1a | Verify PR #42 ...
-tmux send-keys -t yamen-myproject:zongguan "[notify] new inbox from upstream (id=7f3d2e1a): <file>"
+  2026-05-11T15:00:00+08:00 | upstream -> foreman | id=7f3d2e1a | Verify PR #42 ...
+tmux send-keys -t court-myproject:foreman "[notify] new inbox from upstream (id=7f3d2e1a): <file>"
 ```
 
 ### 4. Foreman 读取后分派
 
-zongguan 的 LLM（在 tmux 窗口 `zongguan` 里）看到 `[notify]` 行，
-读 `bus/zongguan/inbox/<file>.md`，决定这是 backend 的活，写：
+foreman 的 LLM（在 tmux 窗口 `foreman` 里）看到 `[notify]` 行，
+读 `bus/foreman/inbox/<file>.md`，决定这是 backend 的活，写：
 
 ```
-.../bus/zongguan/outbox/1715432410-a2b1c0d9-zongguan-to-backend.md
-  from: zongguan
+.../bus/foreman/outbox/1715432410-a2b1c0d9-foreman-to-backend.md
+  from: foreman
   to: backend
   in_reply_to: 7f3d2e1a
   body: "Backend, please run regression tests on the auth code path..."
 ```
 
-然后 `mv` 原始消息到 `bus/zongguan/inbox/.done/`。
+然后 `mv` 原始消息到 `bus/foreman/inbox/.done/`。
 
 watcher 用同样的方式路由新文件。backend 收到通知。
 
 ### 5. Backend 干活并回复
 
 backend 的 LLM 在自己的 `work_dir` 里干完活，把回复写到 outbox，
-收件人是 `zongguan`，`in_reply_to: a2b1c0d9`。watcher 把它路由回去。
+收件人是 `foreman`，`in_reply_to: a2b1c0d9`。watcher 把它路由回去。
 
 ### 6. Foreman 汇总回上游
 
-zongguan 读 backend 的回复，判定任务完成，写：
+foreman 读 backend 的回复，判定任务完成，写：
 
 ```
-.../bus/zongguan/outbox/<file>.md
-  from: zongguan
+.../bus/foreman/outbox/<file>.md
+  from: foreman
   to: upstream
   in_reply_to: 7f3d2e1a
   body: "Done. PR #42 doesn't regress the auth flow. backend ran the suite at ..."
@@ -133,13 +133,13 @@ Claude Code 调用：
 {
   "method": "tools/call",
   "params": {
-    "name": "lan_chengzou",
+    "name": "read_upstream_inbox",
     "arguments": { "project": "myproject" }
   }
 }
 ```
 
-`yamen-mcp` 返回解析后的消息。Claude Code 把它向人类汇报。
+`court-mcp` 返回解析后的消息。Claude Code 把它向人类汇报。
 
 ## 简短的设计选择
 
@@ -147,7 +147,7 @@ Claude Code 调用：
 
 - **可观察**：`cat`、`ls`、`grep` 都直接管用。
 - **持久**：崩了之后能从总线翻状态，不用看内存快照。
-- **解耦**：发送方和接收方不用同时活着。如果 zongguan 的 LLM 正在
+- **解耦**：发送方和接收方不用同时活着。如果 foreman 的 LLM 正在
   回复别的事，新派的活就坐在 inbox 里等。
 - **可分叉**：把一个 `*.md` 拷出来，就能针对已知输入复现某个 role 的反应。
 
@@ -161,14 +161,14 @@ Claude Code 调用：
 ### 为什么每个 project 一个 watcher？
 
 - 一个 watcher = 一个 tmux session = 一个 project。它们不共享状态，
-  起一个新 project 就是 `cp -r` 加再来一次 `kaifu`。
+  起一个新 project 就是 `cp -r` 加再来一次 `court-up`。
 - 每个 watcher 的 `fswatch` 只扫一个 project 的 `bus/` 树 → 廉价。
 
 ### 为什么上游也只是普通 role？
 
 `upstream/outbox` 和 `upstream/inbox` 是常规的总线目录。MCP server
 往 outbox 写、从 inbox 读；watcher 不给它任何特殊待遇。这意味着
-人类自己也可以"扮演 upstream"，用 `chuanwen --from upstream ...`
+人类自己也可以"扮演 upstream"，用 `court-send --from upstream ...`
 来发消息，回复也会落到 MCP server 原本去取的地方。
 
 ## 它**不是**什么
@@ -183,12 +183,12 @@ Claude Code 调用：
 
 ## 扩展
 
-- **加一个 role**：改 `yamen.yaml`，往 `prompts/` 丢一份 prompt 文件，
-  `bifu` 再 `kaifu`。
+- **加一个 role**：改 `court.yaml`，往 `prompts/` 丢一份 prompt 文件，
+  `court-down` 再 `court-up`。
 - **加一个 project**：拷一份 `projects/example/`，改 `session` + `project`
-  + 各 `work_dir`，然后 `kaifu <new>`。
+  + 各 `work_dir`，然后 `court-up <new>`。
 - **换 CLI**：任何接受 system-prompt 参数的 LLM CLI 都能用。
-  在 `yamen.yaml` 里设 `default_cli`，或在 role 级用 `cli` 字段覆盖。
+  在 `court.yaml` 里设 `default_cli`，或在 role 级用 `cli` 字段覆盖。
   CLI flag 不一样的可以包一层小 shell 脚本。
 - **自定义上游**：写任何说 MCP 的客户端；或者完全不用 MCP，从 webhook
-  里调 `chuanwen --from upstream ...`。
+  里调 `court-send --from upstream ...`。

@@ -1,31 +1,39 @@
 [中文](./README.md) | **English**
 
-# agent-yamen
+# agent-court
 
-> A tiny local multi-agent orchestrator. Each project under your `agent-yamen`
+> A tiny local multi-agent orchestrator. Each project under your `agent-court`
 > installation is a small **court** of LLM CLI processes — one tmux window
 > per role — coordinating through a filesystem message bus. An MCP server
 > exposes the bus upstream so any personal-assistant LLM (Claude Code,
 > Cursor, Zed, …) can dispatch work in. Multiple machines can federate over
 > HTTP with ed25519-signed messages.
 
-## The metaphor
+## The metaphor · the imperial court (朝廷)
 
-Think of your `agent-yamen` installation as a small **government**:
+Think of your `agent-court` installation as a Chinese imperial court (**朝廷**):
 
-| Layer | Technical name | Metaphor | What they do |
+| Rank | Technical name | Court role | What they do |
 |---|---|---|---|
-| Sovereign | the human (you) | 君王 | Issue intent; review results; final say. |
-| Chancellor | upstream LLM (Claude Code, etc.) | 丞相 / 助理 | Listens to the sovereign, decides which court to call. |
-| Court | a project under `$YAMEN_ROOT/projects/<p>/` | 府衙 (one per project) | A tmux session of roles + a private mailroom. |
-| Foreman | the `zongguan` role | 工头 | Receives the chancellor's dispatch; splits work across workers. |
-| Workers | `frontend` / `backend` / `devops` / … | 百官 | Do the actual work in their own files. |
-| Sibling / Parent / Child court | a peer in `bangjiao.yaml` | 邻邦 / 上司 / 下属 | Another `agent-yamen` project on another machine you've explicitly federated with. |
+| Sovereign | the human (you) | **皇上 / Emperor** (君王) | Issue intent; rubber-stamp results (批红); final say. |
+| Cabinet | upstream LLM (Claude Code, etc.) | **内阁首辅 / Chancellor** (丞相) | Listens to the Emperor, decides which ministry (project) to summon. |
+| Ministry / Province | a project under `$COURT_ROOT/projects/<p>/` | **一道 / 一司** (a department of the imperium, one per project) | A tmux session of roles + a private mailroom. |
+| Chief minister | the `foreman` role | **司主事 / 首辅大学士** | Receives the cabinet's dispatch; splits work across the six bureaus. |
+| Six bureaus | `frontend` / `backend` / `devops` / … | **六部主事** (engineering roles mapping onto 吏户礼兵刑工) | Do the actual work in their own files. |
+| Judiciary | `judge.py` / LLM judge | **大理寺 (推官)** | Adjudicates the policy-engine's `tier_b` cases; fails safe to human review. |
+| Transmission bureau | the filesystem bus (`bus/`) | **通政司** | Routes every memorial / dispatch through the centre. |
+| Court recorder | the `court-watcher` daemon | **起居官** | Keeps the imperial diary while routing files between bureaus. |
+| Foreign-affairs office | the `court-mcp` MCP server | **鸿胪寺** | Exposes the court upstream so any external assistant can dispatch in. |
+| Pending palace memorials | `bus/<peer>/pending-approval/` | **留中** (lit. "kept in the palace; the emperor has not decided") | Awaiting human review. |
+| Vermillion stamp | `court-approve` action | **朱批 / 准奏 / 驳回** | The emperor's final approval or rejection of a held memorial. |
+| Travel permit / rank token | path / tier grants | **路引** / **品级令** | sudo-style time-bounded credentials: let one tributary look at one file, or temporarily raise its rank for one message. |
+| Tributary state | a peer in `peers.yaml` | **藩邦 / 邻邦** | Another `agent-court` project on another machine you've explicitly federated with. |
+| Diplomatic relations | the `federation:` block | **邦交** | The catalogue of how this court talks to outsiders; default off. |
 
 > **Naming note.** "Peer" is overloaded: it means *both* a worker role
-> alongside the zongguan, *and* a federated remote court. Inside the code
+> alongside the foreman, *and* a federated remote court. Inside the code
 > we keep `peer` for the remote-court meaning and use `relation: sibling`
-> (not `relation: peer`) inside `bangjiao.yaml` to refer to courts at the
+> (not `relation: peer`) inside `peers.yaml` to refer to courts at the
 > same level. See [Federation](#federation-optional) below.
 
 Everything is *visible*: each role is a real tmux window running a real CLI,
@@ -40,7 +48,7 @@ single chat window — which is the wrong direction if you want to *watch*
 what's happening, fork a frozen role's prompt, or feed in human nudges
 between turns.
 
-`agent-yamen` keeps agents visible (tmux), durable (files, not RAM),
+`agent-court` keeps agents visible (tmux), durable (files, not RAM),
 inspectable (a single `event.log` per project), and pluggable (one MCP
 server exposes the whole thing to anything that speaks MCP). When you
 need to hand work between people on different machines, an opt-in
@@ -57,22 +65,22 @@ federation layer signs messages with ed25519 and POSTs them over HTTP.
 ┌──────────────────────────────┴───────────────────────────────────────┐
 │ Upstream LLM (e.g. Claude Code, Cursor, a custom assistant)           │
 │   - speaks MCP                                                        │
-│   - has the agent-yamen MCP server attached                           │
+│   - has the agent-court MCP server attached                           │
 └──────────────────────────────┬───────────────────────────────────────┘
                                │ MCP (stdio JSON-RPC) — full local access
 ┌──────────────────────────────┴───────────────────────────────────────┐
-│ yamen-mcp server (Python, FastMCP)                                    │
-│  local : lie_yamen / chizhao_zongguan / tang_yamen     │
-│          lan_chengzou                                          │
-│  peer  : lie_fanbang / guoshu_fanbang    ← signs + POSTs to remote   │
+│ court-mcp server (Python, FastMCP)                                    │
+│  local : list_projects / dispatch_to_foreman / query_court_status     │
+│          read_upstream_inbox                                          │
+│  peer  : list_peers / dispatch_to_peer    ← signs + POSTs to remote   │
 └──────────────────────────────┬───────────────────────────────────────┘
                                │ writes markdown files
 ┌──────────────────────────────┴───────────────────────────────────────┐
-│ $YAMEN_ROOT/projects/<p>/bus/<role>/{inbox, outbox, inbox/.done}/     │
+│ $COURT_ROOT/projects/<p>/bus/<role>/{inbox, outbox, inbox/.done}/     │
 └──────────────────────────────┬───────────────────────────────────────┘
                                │ fswatch sees the new file
 ┌──────────────────────────────┴───────────────────────────────────────┐
-│ qijuguan daemon                                                  │
+│ court-watcher daemon                                                  │
 │   parse frontmatter → mv to target inbox → append event.log           │
 │                     → tmux send-keys notify target window             │
 └──────────────────────────────┬───────────────────────────────────────┘
@@ -80,7 +88,7 @@ federation layer signs messages with ed25519 and POSTs them over HTTP.
 ┌──────────────────────────────┴───────────────────────────────────────┐
 │ tmux session: court-<project>                                         │
 │   ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐      │
-│   │ zongguan    │  │ frontend   │  │ backend    │  │ devops     │  …   │
+│   │ foreman    │  │ frontend   │  │ backend    │  │ devops     │  …   │
 │   │ (LLM CLI)  │  │ (LLM CLI)  │  │ (LLM CLI)  │  │ (LLM CLI)  │      │
 │   └────────────┘  └────────────┘  └────────────┘  └────────────┘      │
 └──────────────────────────────────────────────────────────────────────┘
@@ -89,7 +97,7 @@ Optional federation (per-project, default OFF):
 
    Machine A / project foo                    Machine B / project foo
    ┌──────────────────────────┐               ┌──────────────────────────┐
-   │ MCP: guoshu_fanbang    │ ed25519 sig   │ tongzheng :8765 /inbox  │
+   │ MCP: dispatch_to_peer    │ ed25519 sig   │ court-peer :8765 /inbox  │
    │   → POST /inbox          │──────────────▶│   verify sig             │
    │                          │               │   check expose_roles     │
    │                          │               │   drop into bus/         │
@@ -100,7 +108,7 @@ Each message is one markdown file:
 
 ```markdown
 ---
-from: zongguan
+from: foreman
 to: frontend
 ts: 2026-05-11T15:00:00+08:00
 id: 7f3d2e1a
@@ -126,84 +134,84 @@ frontmatter to route. Replies set `in_reply_to` to chain a conversation.
 - An LLM CLI that accepts `--append-system-prompt` and optionally
   `--model`. The default is `claude` (Anthropic's Claude Code), but
   anything compatible works — set `default_cli` in your project's
-  `yamen.yaml`, or override per-role with `cli`.
+  `court.yaml`, or override per-role with `cli`.
 
 ### Install
 
 ```bash
 # 1. clone
-git clone https://github.com/YOUR_GH_USER/agent-yamen.git ~/agent-yamen
-cd ~/agent-yamen
+git clone https://github.com/YOUR_GH_USER/agent-court.git ~/agent-court
+cd ~/agent-court
 
 # 2. put the bin/ on your PATH (bash/zsh)
-echo 'export PATH="$HOME/agent-yamen/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="$HOME/agent-court/bin:$PATH"' >> ~/.zshrc
 # fish:
-#   fish_add_path --prepend $HOME/agent-yamen/bin
+#   fish_add_path --prepend $HOME/agent-court/bin
 
 # 3. install the MCP server (so an upstream LLM can dispatch into courts)
-cd mcp/yamen-mcp
+cd mcp/court-mcp
 uv venv .venv
 uv pip install --python .venv/bin/python -e .
 
 # 4. create your court home and copy the example project
-mkdir -p ~/.agent-yamen/projects
-cp -r ~/agent-yamen/projects/example ~/.agent-yamen/projects/myproject
-# edit ~/.agent-yamen/projects/myproject/yamen.yaml to set real work_dir paths
+mkdir -p ~/.agent-court/projects
+cp -r ~/agent-court/projects/example ~/.agent-court/projects/myproject
+# edit ~/.agent-court/projects/myproject/court.yaml to set real work_dir paths
 ```
 
 ### Run
 
 ```bash
-kaifu myproject
+court-up myproject
 ```
 
-This brings up a tmux session `yamen-myproject` with one window per role,
-each running its LLM CLI with the role's system prompt loaded. A `qijuguan`
-daemon starts in the background; logs at `~/.agent-yamen/projects/myproject/logs/`.
+This brings up a tmux session `court-myproject` with one window per role,
+each running its LLM CLI with the role's system prompt loaded. A `court-watcher`
+daemon starts in the background; logs at `~/.agent-court/projects/myproject/logs/`.
 
 To stop:
 
 ```bash
-bifu myproject
+court-down myproject
 ```
 
 ### Send a message from the command line
 
 ```bash
-chuanwen -p myproject --to zongguan "review the new auth changes and dispatch to whoever needs to follow up"
+court-send -p myproject --to foreman "review the new auth changes and dispatch to whoever needs to follow up"
 ```
 
-The zongguan's claude window will get a `[notify]` line, read the inbox,
+The foreman's claude window will get a `[notify]` line, read the inbox,
 and react.
 
 ### Connect to Claude Code (or any MCP client)
 
 ```bash
 # Claude Code: register the court MCP server at user scope
-claude mcp add -s user agent-yamen \
-  $HOME/agent-yamen/mcp/yamen-mcp/.venv/bin/python \
-  $HOME/agent-yamen/mcp/yamen-mcp/server.py
+claude mcp add -s user agent-court \
+  $HOME/agent-court/mcp/court-mcp/.venv/bin/python \
+  $HOME/agent-court/mcp/court-mcp/server.py
 
 # Verify
-claude mcp list   # should show agent-yamen ✓ Connected
+claude mcp list   # should show agent-court ✓ Connected
 ```
 
 Claude Code now sees the full local-MCP toolset:
 
 | Tool | Use it when... |
 |---|---|
-| `lie_yamen` | The user mentions a project by name and you want to know what's available. |
-| `chizhao_zongguan(project, message, target_role?)` | The user wants someone in a court to do something. |
-| `tang_yamen(project)` | The user asks "what's happening in `<project>`?". |
-| `lan_chengzou(project)` | The user asks "any updates from `<project>`?" (zongguan's replies live here). |
-| `lie_fanbang(project)` | The user asks about federation status for a project. |
-| `guoshu_fanbang(project, peer_yamen_id, message, ...)` | The user wants to forward something to a federated court. |
-| `ban_luyin(project, peer_yamen_id, paths, ttl?)` | The user wants to temporarily widen what a peer's `attaches:` may reference. |
-| `sheng_pinji(project, peer_yamen_id, target_tier, ttl?, consume_on_use?)` | The user wants to bump a peer's tier (e.g. `tier_a` → `tier_c`) for a window or a single message. |
-| `lie_lingpai(project)` / `kan_lingpai(project, id)` / `zhui_lingpai(project, id)` | The user wants to inspect or kill an outstanding grant. |
+| `list_projects` | The user mentions a project by name and you want to know what's available. |
+| `dispatch_to_foreman(project, message, target_role?)` | The user wants someone in a court to do something. |
+| `query_court_status(project)` | The user asks "what's happening in `<project>`?". |
+| `read_upstream_inbox(project)` | The user asks "any updates from `<project>`?" (foreman's replies live here). |
+| `list_peers(project)` | The user asks about federation status for a project. |
+| `dispatch_to_peer(project, peer_court_id, message, ...)` | The user wants to forward something to a federated court. |
+| `grant_peer_access(project, peer_court_id, paths, ttl?)` | The user wants to temporarily widen what a peer's `attaches:` may reference. |
+| `grant_peer_tier(project, peer_court_id, target_tier, ttl?, consume_on_use?)` | The user wants to bump a peer's tier (e.g. `tier_a` → `tier_c`) for a window or a single message. |
+| `list_grants(project)` / `grant_info(project, id)` / `revoke_grant(project, id)` | The user wants to inspect or kill an outstanding grant. |
 
 Local MCP tools have **full machine access** — they read and write
-anywhere under `$YAMEN_ROOT/projects/<p>/`. The restriction surface lives
+anywhere under `$COURT_ROOT/projects/<p>/`. The restriction surface lives
 on the federation side (next section).
 
 Same shape works for Cursor, Zed, any MCP-aware assistant, or a custom
@@ -215,8 +223,8 @@ Default is **off**. Each project decides for itself whether to accept
 inbound messages from federated peers — there is no global switch.
 
 The model is **project-scoped, not machine-scoped**: each project under
-`$YAMEN_ROOT/projects/<p>/` has its own keypair, its own `bangjiao.yaml`,
-and its own `yamen_id`. Two projects on the same machine cannot infer
+`$COURT_ROOT/projects/<p>/` has its own keypair, its own `peers.yaml`,
+and its own `court_id`. Two projects on the same machine cannot infer
 that the other exists (different keys, separate peer lists). This is
 deliberate isolation — "my work for client A" should not leak into "my
 work for client B" just because they share a laptop.
@@ -225,35 +233,35 @@ To enable federation for one project:
 
 ```bash
 # 1. generate that project's keypair
-zhuyin myproject
+court-keygen myproject
 # → prints the public key + fingerprint to share with the other side
 
-# 2. edit yamen.yaml — uncomment the bangjiao: block
-$EDITOR ~/.agent-yamen/projects/myproject/yamen.yaml
+# 2. edit court.yaml — uncomment the federation: block
+$EDITOR ~/.agent-court/projects/myproject/court.yaml
 
-# 3. add the remote peer to that project's bangjiao.yaml
-$EDITOR ~/.agent-yamen/projects/myproject/bangjiao.yaml
-# (see projects/example/bangjiao.example.yaml for the schema)
+# 3. add the remote peer to that project's peers.yaml
+$EDITOR ~/.agent-court/projects/myproject/peers.yaml
+# (see projects/example/peers.example.yaml for the schema)
 
 # 4. start the receiver daemon for that project
-tongzheng myproject
+court-peer myproject
 # → listens on 0.0.0.0:8765 by default, accepts POST /inbox
 ```
 
-When `bangjiao: enabled: false` (or the block is missing entirely),
-`tongzheng` refuses to start and `guoshu_fanbang` returns
-`{"error": "bangjiao_disabled"}`. Flipping the flag back to false
+When `federation: enabled: false` (or the block is missing entirely),
+`court-peer` refuses to start and `dispatch_to_peer` returns
+`{"error": "federation_disabled"}`. Flipping the flag back to false
 takes effect on the next inbound request — no restart needed.
 
 Inbound messages go through four checks before they land in the bus:
 
 1. **Signature** — verified against the sender's `pub_key_b64` from this
-   project's `bangjiao.yaml`. Bad sig → 401.
+   project's `peers.yaml`. Bad sig → 401.
 2. **Known sender** — `from_court` must appear in this project's
-   `bangjiao.yaml`. Unknown → 403.
+   `peers.yaml`. Unknown → 403.
 3. **Role whitelist** — the `to:` role must be listed in
-   `bangjiao.expose_roles`. Default is `[zongguan]`, so only the
-   zongguan is reachable from outside; zongguan then routes work
+   `federation.expose_roles`. Default is `[foreman]`, so only the
+   foreman is reachable from outside; foreman then routes work
    internally. Off-list → 403.
 4. **Policy engine** (PR-2) — see next section.
 
@@ -270,7 +278,7 @@ by the policy engine and routed to one of four outcomes:
 |---|---|---|
 | `auto_pass` | `bus/<peer>/inbox/` | tier_c peer, clean body, paths within allow list — *or* PR-3 LLM judge said so on a tier_b message |
 | `human_required` | `bus/<peer>/pending-approval/` | tier_a peer, sensitive keyword, attach outside allow_paths, *or* PR-3 LLM judge upgraded a tier_b message |
-| `denied` | `bus/<peer>/denied/` *(audit only)* | attach matches a deny path. Never reaches zongguan. |
+| `denied` | `bus/<peer>/denied/` *(audit only)* | attach matches a deny path. Never reaches foreman. |
 
 PR-3 wired an actual LLM in for tier_b. When policy says `judge`, the
 daemon calls the configured LLM CLI (`default_cli` by default, e.g.
@@ -282,20 +290,20 @@ have been without PR-3.
 
 Configuration lives in two files per project:
 
-- **`yamen.yaml`** —
-  - `bangjiao.allow_paths` / `deny_paths` — path globs that
+- **`court.yaml`** —
+  - `federation.allow_paths` / `deny_paths` — path globs that
     constrain what files an inbound message may reference via its
     `attaches:` frontmatter field.
-  - `bangjiao.judge` — which CLI to invoke for tier_b judgement,
+  - `federation.judge` — which CLI to invoke for tier_b judgement,
     optional `model`, optional `prompt_file` override,
     `timeout_seconds` (default 30), `confidence_threshold`
     (default 0.6). Falls back to top-level `default_cli` when
     `judge.cli` is unset.
-- **`lvli.yaml`** — `default_tier:` (one of `tier_a`/`tier_b`/`tier_c`)
+- **`policy.yaml`** — `default_tier:` (one of `tier_a`/`tier_b`/`tier_c`)
   + optional `sensitive_keywords:` list appended to the built-in one.
 
-`bangjiao.yaml` may pin `policy_tier:` per peer; if absent, falls through
-to `lvli.yaml`'s `default_tier`.
+`peers.yaml` may pin `policy_tier:` per peer; if absent, falls through
+to `policy.yaml`'s `default_tier`.
 
 **Hardcoded layer (cannot be overridden by config).** Paths matching
 `**/.ssh/**`, `**/.env`, `**/id_rsa*`, `/etc/**`, `**/credentials.json`,
@@ -304,7 +312,7 @@ Bodies containing `api_key`, `password`, `secret`, `token`, `sk-`,
 `AKIA`, etc. always force `human_required`.
 
 Every decision is appended to
-`$YAMEN_ROOT/projects/<p>/logs/panduo.jsonl` for audit.
+`$COURT_ROOT/projects/<p>/logs/policy-log.jsonl` for audit.
 
 See [docs/lan-deployment.en.md](./docs/lan-deployment.en.md) for a full
 example with the `attaches:` field.
@@ -320,45 +328,45 @@ Two grant types, distinguished by `grant_type`:
 | Type | Widens... | Use when |
 |---|---|---|
 | `path` (default) | `allow_paths` | one-off attach outside the configured whitelist |
-| `tier` | the peer's `policy_tier` for the soft layer | want to wave through a single tier_a/b message without editing bangjiao.yaml |
+| `tier` | the peer's `policy_tier` for the soft layer | want to wave through a single tier_a/b message without editing peers.yaml |
 
 Hardcoded denies, user `deny_paths`, and `HARDCODED_KEYWORDS` always
 still win. Grants can only *add* capabilities, never subtract.
 
 ```bash
 # Path grant — 30 min for Bob to attach anything under notes/
-banling example bob "notes/**"
-banling example bob "shared/draft-*.md" --ttl 2h
+court-grant example bob "notes/**"
+court-grant example bob "shared/draft-*.md" --ttl 2h
 
 # Tier grant — upgrade Bob to tier_c for one message only
-banling example bob --tier tier_c --once
+court-grant example bob --tier tier_c --once
 
 # Tier grant — upgrade for an hour
-banling example bob --tier tier_c --ttl 1h
+court-grant example bob --tier tier_c --ttl 1h
 
-banling example list
+court-grant example list
 # STATE     T ID         PEER  EXPIRES                  HITS DETAIL
 # active    P 4616c19a   bob   2026-05-13T22:53:00+...  0    notes/**
 # active    T 7fa20bd8   bob   2026-05-13T23:00:00+...  0    →tier_c [once]
 
-banling example info 4616c19a       # full record + remaining time + hit count
-banling example revoke 4616c19a
+court-grant example info 4616c19a       # full record + remaining time + hit count
+court-grant example revoke 4616c19a
 ```
 
 The `T` column is `P` for path grants, `T` for tier grants. `info`
 shows `state`, `remaining`, `hit_count`, `last_hit_ts`, and
 (for once-grants) `consumed_ts`.
 
-Grants are JSON files under `$YAMEN_ROOT/projects/<p>/grants/`,
+Grants are JSON files under `$COURT_ROOT/projects/<p>/grants/`,
 written atomically and validated on read (oversize / malformed
-files are skipped with a warning to `logs/bangjiao-errors.log`).
+files are skipped with a warning to `logs/peer-errors.log`).
 Durable across daemon restarts; `revoke` deletes the file. From an
-upstream LLM the same surface is exposed as `ban_luyin` /
-`sheng_pinji` / `kan_lingpai` / `lie_lingpai` / `zhui_lingpai`.
+upstream LLM the same surface is exposed as `grant_peer_access` /
+`grant_peer_tier` / `grant_info` / `list_grants` / `revoke_grant`.
 
 The `project` argument on every grant entry point is validated for
 filesystem-component safety AND containment under
-`$YAMEN_ROOT/projects/`. Passing `project="../foo"` returns an error
+`$COURT_ROOT/projects/`. Passing `project="../foo"` returns an error
 rather than reading from outside the projects root.
 
 For a full two-machine walk-through see [docs/lan-deployment.en.md](./docs/lan-deployment.en.md).
@@ -378,15 +386,15 @@ never blocks the daemon's HTTP response or the other channels:
 | `feishu` | POST to a Feishu/Lark custom-bot webhook with a plain-text payload. |
 | `wechat` | Shell out to `cc-connect send` so the existing WeChat bridge delivers the notification into a specific chat thread. |
 
-**Config** lives under `bangjiao.shenpi` in `yamen.yaml`:
+**Config** lives under `federation.approvals` in `court.yaml`:
 
 ```yaml
-bangjiao:
+federation:
   enabled: true
-  shenpi:
+  approvals:
     enabled: true
     channels: [terminal, feishu, wechat]
-    timeout_seconds: 0     # 0 = never expire; >0 → pizhun cleanup auto-denies past this age
+    timeout_seconds: 0     # 0 = never expire; >0 → court-approve cleanup auto-denies past this age
     feishu:
       webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/..."
       mention: ["ou_xxx"]   # open_ids to @ in the message body
@@ -396,70 +404,70 @@ bangjiao:
       cc_connect_session_key: "..."       # which conversation
 ```
 
-**Approval action** is unified through `pizhun` — same surface from
+**Approval action** is unified through `court-approve` — same surface from
 terminal, Feishu reply, or WeChat reply:
 
 ```bash
-pizhun example list                # show pending + expired
-pizhun example approve 4616c19a    # → bus/<peer>/inbox/
-pizhun example deny    4616c19a    # → bus/<peer>/denied/
-pizhun example cleanup             # auto-deny everything past timeout
+court-approve example list                # show pending + expired
+court-approve example approve 4616c19a    # → bus/<peer>/inbox/
+court-approve example deny    4616c19a    # → bus/<peer>/denied/
+court-approve example cleanup             # auto-deny everything past timeout
 ```
 
-MCP tools (callable from any upstream LLM that has agent-yamen attached):
+MCP tools (callable from any upstream LLM that has agent-court attached):
 
-- `lie_liuzhong(project)` — list pending + expired
-- `pizhun(project, msg_id, action)` — action ∈ `{"approve", "deny"}`
+- `list_pending(project)` — list pending + expired
+- `court-approve(project, msg_id, action)` — action ∈ `{"approve", "deny"}`
 
 **The WeChat loop closes itself** through cc-connect: the bridge
 delivers the notification to a WeChat user, the user replies "approve
 4616c19a", cc-connect's claude session sees that and calls
-`pizhun(...)` over MCP. No webhook callback gateway needed.
+`court-approve(...)` over MCP. No webhook callback gateway needed.
 
 Every approval action (approved / denied / expired-auto-deny / notify
-failure / etc.) is appended to `logs/shenpi-log.jsonl` for audit.
+failure / etc.) is appended to `logs/approval-log.jsonl` for audit.
 
 ## Directory layout
 
 ```
-$YAMEN_ROOT/                                  # default ~/.agent-yamen
+$COURT_ROOT/                                  # default ~/.agent-court
 ├── projects/
 │   └── myproject/
-│       ├── yamen.yaml                        # project config (+ federation block)
-│       ├── bangjiao.yaml                        # this project's known peers
-│       ├── lvli.yaml                       # PR-2: tier + sensitive keywords (optional)
+│       ├── court.yaml                        # project config (+ federation block)
+│       ├── peers.yaml                        # this project's known peers
+│       ├── policy.yaml                       # PR-2: tier + sensitive keywords (optional)
 │       ├── identity/                         # this project's keypair (mode 0600/0644)
 │       │   ├── priv.key
 │       │   └── pub.key
 │       ├── grants/                           # PR-4: one JSON file per active/expired grant
 │       │   └── <id>.json
 │       ├── prompts/
-│       │   ├── zongguan.md
+│       │   ├── foreman.md
 │       │   ├── frontend.md
 │       │   └── ...                           # one per role
 │       ├── bus/
-│       │   ├── zongguan/{inbox,outbox,inbox/.done}/
+│       │   ├── foreman/{inbox,outbox,inbox/.done}/
 │       │   ├── frontend/...
 │       │   ├── backend/...
 │       │   ├── upstream/...                  # MCP caller's outbox/inbox
 │       │   ├── human/...                     # your CLI sends land here
-│       │   └── <peer_yamen_id>/              # inbound peer messages, fanned by decision
+│       │   └── <peer_court_id>/              # inbound peer messages, fanned by decision
 │       │       ├── inbox/                    #   auto_pass + judge land here
 │       │       ├── pending-approval/         #   human_required parks here
 │       │       └── denied/                   #   denied (audit only, never delivered)
 │       ├── shared/event.log
-│       └── logs/{watcher.log, bangjiao-errors.log, panduo.jsonl, watcher.pid}
+│       └── logs/{watcher.log, peer-errors.log, policy-log.jsonl, watcher.pid}
 ```
 
 The repository itself (this one) only ships:
-- `bin/` — shell scripts (`kaifu`, `bifu`, `qijuguan`,
-  `chuanwen`, `shengtang`, `zhuyin`, `tongzheng`, `banling`)
-- `mcp/yamen-mcp/` — the Python MCP server + peer daemon + keygen
+- `bin/` — shell scripts (`court-up`, `court-down`, `court-watcher`,
+  `court-send`, `role-launch`, `court-keygen`, `court-peer`, `court-grant`)
+- `mcp/court-mcp/` — the Python MCP server + peer daemon + keygen
 - `projects/example/` — a fork-me example project (with a commented-out
-  `bangjiao:` block as schema reference)
+  `federation:` block as schema reference)
 - `docs/` — extra docs (LAN deployment, cc-connect bridge, etc.)
 
-Your actual courts live under `$YAMEN_ROOT` (default `~/.agent-yamen/`),
+Your actual courts live under `$COURT_ROOT` (default `~/.agent-court/`),
 *outside* the repo.
 
 ## FAQ
@@ -471,7 +479,7 @@ spawn workers, hide them in background context, and tear them down on
 completion. You can't `tmux attach` and watch an agent think, you can't fork
 its system prompt mid-task, and the message graph is owned by the framework.
 
-`agent-yamen` is closer to a tiny operating system: long-running role
+`agent-court` is closer to a tiny operating system: long-running role
 processes, filesystem IPC, an external watcher. Worse abstraction, better
 inspectability.
 
@@ -484,9 +492,9 @@ want.
 
 ### How does this interact with my existing LLM CLI?
 
-`shengtang` invokes your CLI with `--append-system-prompt <prompt file>`
+`role-launch` invokes your CLI with `--append-system-prompt <prompt file>`
 and (optionally) `--model <model>`. If your CLI uses a different flag, set
-the role's `cli` field in `yamen.yaml` to a small wrapper script.
+the role's `cli` field in `court.yaml` to a small wrapper script.
 
 ### Why is each project a separate keypair? Can't I share one across projects?
 
@@ -495,7 +503,7 @@ per-project keys is that "Alice's work for client A" and "Alice's work
 for client B" are two different courts on the network — a peer Alice
 federated with for project A cannot, by virtue of that trust, also see
 or dispatch into project B. Different projects = different
-`yamen_id`s + different keys + different `bangjiao.yaml`. Re-using a
+`court_id`s + different keys + different `peers.yaml`. Re-using a
 keypair across projects would collapse that isolation.
 
 ### What about cost?
@@ -516,11 +524,11 @@ filter + pending-approval bin), PR-3 (LLM judge for the `tier_b`
 branch, with fail-safe fallback to human_required), PR-4
 (sudo-style temporary grants — peer-scoped, time-bounded grants
 that widen `allow_paths` (path grants) or override the soft tier
-(tier grants, with optional `--once` semantics), via `banling`
+(tier grants, with optional `--once` semantics), via `court-grant`
 + MCP; hardened against path traversal, atomic writes, strict
 JSON validation), and PR-5 (留中/pending-approval review —
 terminal / FeiShu / WeChat notification channels + unified
-`pizhun` CLI/MCP approval action + configurable timeout-sweep;
+`court-approve` CLI/MCP approval action + configurable timeout-sweep;
 notification is fire-and-forget and never blocks HTTP; the
 WeChat side loops through cc-connect, no extra gateway needed)
 are working with 190+ tests. PR-6 (IM redundancy) is next.

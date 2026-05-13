@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# agent-court — court-peer HTTP receiver daemon (inter-court inbound).
+#
+# Usage:
+#   court-peer <project>            # bind 0.0.0.0:8765 by default
+#   COURT_PEER_BIND=127.0.0.1:9000 court-peer <project>
+#   court-peer <project> --bind 192.168.1.10:8765
+#
+# Env:
+#   COURT_ROOT      court home dir (default ~/.agent-court)
+#   COURT_PEER_BIND override default bind address
+set -e
+
+PROJECT="${1:-}"
+if [ -z "$PROJECT" ]; then
+  echo "[court-peer] usage: court-peer <project> [--bind host:port]" >&2
+  echo "available projects:" >&2
+  ls -1 "${COURT_ROOT:-$HOME/.agent-court}/projects" 2>/dev/null | sed 's/^/  /' >&2
+  exit 1
+fi
+
+BIN="$(cd "$(dirname "$0")" && pwd)"
+MCP_DIR="$(cd "$BIN/.." && pwd)/mcp/court-mcp"
+
+VENV_PY="${COURT_VENV_PY:-$MCP_DIR/.venv/bin/python}"
+if [ ! -x "$VENV_PY" ]; then
+  echo "[court-peer] missing python venv at $VENV_PY" >&2
+  echo "[court-peer] run: cd $MCP_DIR && uv venv .venv && uv pip install --python .venv/bin/python -e ." >&2
+  exit 1
+fi
+
+exec "$VENV_PY" "$MCP_DIR/peer_daemon.py" "$@"
