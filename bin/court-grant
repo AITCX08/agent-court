@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# agent-court — issue / list / revoke temporary path-access grants for a peer.
+#
+# Usage:
+#   court-grant <project> <peer> <path> [<path>...] [--ttl 30m]
+#   court-grant <project> list
+#   court-grant <project> revoke <grant-id>
+#
+# Grants are persisted under $COURT_ROOT/projects/<project>/grants/.
+# Each grant widens the project's allow_paths whitelist for the named
+# peer only, for the requested TTL. Hardcoded denies (in policy.py)
+# always still win.
+set -e
+
+BIN="$(cd "$(dirname "$0")" && pwd)"
+MCP_DIR="$(cd "$BIN/.." && pwd)/mcp/court-mcp"
+
+VENV_PY="${COURT_VENV_PY:-$MCP_DIR/.venv/bin/python}"
+if [ ! -x "$VENV_PY" ]; then
+  echo "[court-grant] missing python venv at $VENV_PY" >&2
+  echo "[court-grant] run: cd $MCP_DIR && uv venv .venv && uv pip install --python .venv/bin/python -e ." >&2
+  exit 1
+fi
+
+exec "$VENV_PY" "$MCP_DIR/grant_cli.py" "$@"

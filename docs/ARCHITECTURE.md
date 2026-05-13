@@ -1,35 +1,33 @@
-# Architecture
+**中文** | [English](./ARCHITECTURE.en.md)
 
-This document walks through how a single message moves through `agent-court`
-end to end. If `README.md` is the elevator pitch, this is the floor-by-floor
-tour.
+# 架构
 
-## Components
+这份文档讲一条消息从头到尾在 `agent-court` 里的完整流动。如果说 `README.md`
+是电梯介绍，这份就是逐层楼的实地游览。
+
+## 组件
 
 ```
-upstream LLM ── MCP stdio ── court-mcp ── filesystem ── court-watcher ── tmux ── role LLM CLI
+upstream LLM ── MCP stdio ── court-mcp ── 文件系统 ── court-watcher ── tmux ── role LLM CLI
 ```
 
-Five processes, no daemons-of-daemons:
+五个进程，没有"守护守护进程"的嵌套：
 
-1. **Upstream LLM client** — anything that speaks MCP. Holds the
-   relationship with the human user (terminal chat, messaging bridge,
-   editor, whatever).
-2. **`court-mcp` server** — Python (FastMCP). Started as a child of the
-   upstream LLM when it loads its MCP servers. Translates tool calls into
-   filesystem writes. Stateless.
-3. **Filesystem bus** — `$COURT_ROOT/projects/<p>/bus/<role>/{inbox,outbox}/`.
-   The only durable state in the system.
-4. **`court-watcher` daemon** — Bash + `fswatch`. One per project. Routes
-   `outbox/<file>.md` → `bus/<to>/inbox/<file>.md`, appends `event.log`,
-   notifies the target tmux window.
-5. **Role LLM CLI** — one per role, running inside its own tmux window
-   under the project's tmux session. Reads its inbox, writes to its outbox,
-   doesn't know about anything else.
+1. **上游 LLM 客户端** —— 任何说 MCP 的程序。它持有"和人类用户"的关系
+   （终端对话、消息桥、编辑器，随你）。
+2. **`court-mcp` 服务** —— Python（FastMCP）。作为上游 LLM 的子进程启动，
+   在它加载 MCP servers 时跟着起。把工具调用翻译成文件写入。无状态。
+3. **文件系统总线** —— `$COURT_ROOT/projects/<p>/bus/<role>/{inbox,outbox}/`。
+   系统里**唯一**的持久状态。
+4. **`court-watcher` 守护进程** —— Bash + `fswatch`。每个 project 一份。
+   把 `outbox/<file>.md` 路由到 `bus/<to>/inbox/<file>.md`，
+   追加 `event.log`，并通过 tmux 通知目标窗口。
+5. **Role LLM CLI** —— 每个 role 一份，跑在 project 的 tmux session 下的
+   独立窗口里。读自己的 inbox，写自己的 outbox，不知道别人的存在。
 
-## Message format
+## 消息格式
 
-Every bus item is a single markdown file:
+总线上的每一条都是一个 markdown 文件：
 
 ```markdown
 ---
@@ -37,26 +35,23 @@ from: foreman
 to: frontend
 ts: 2026-05-11T15:00:00+08:00
 id: 7f3d2e1a
-in_reply_to: 5a2c1b0d        # optional
+in_reply_to: 5a2c1b0d        # 可选
 ---
 
-Free-form body. This is what the receiving LLM reads.
+自由格式的正文。这是接收侧 LLM 实际读到的内容。
 ```
 
-- `id` is a random 8-char hex string. Globally unique enough; the watcher
-  never deduplicates.
-- `in_reply_to` lets you reconstruct conversation chains from
-  `event.log`. It's a hint, not enforced.
-- Filename: `<unix_ts>-<id>-<from>-to-<to>.md` — sortable, greppable.
+- `id` 是随机 8 字符 hex 串。全局唯一性"够用就行"；watcher 不做去重。
+- `in_reply_to` 用来从 `event.log` 重建对话链。是提示性的，不强制。
+- 文件名：`<unix_ts>-<id>-<from>-to-<to>.md` —— 可排序、可 grep。
 
-## End-to-end example
+## 端到端示例
 
-Scenario: the upstream LLM (Claude Code) wants the `myproject` foreman to
-verify yesterday's PR didn't break anything.
+场景：上游 LLM（Claude Code）想让 `myproject` 的 foreman 核对昨天的 PR 有没有破坏什么。
 
-### 1. MCP tool call
+### 1. MCP 工具调用
 
-Claude Code emits:
+Claude Code 发出：
 
 ```json
 {
@@ -71,34 +66,33 @@ Claude Code emits:
 }
 ```
 
-### 2. court-mcp writes a file
+### 2. court-mcp 写一个文件
 
-`court-mcp` receives the call and writes:
+`court-mcp` 接到调用，写：
 
 ```
 $COURT_ROOT/projects/myproject/bus/upstream/outbox/1715432400-7f3d2e1a-upstream-to-foreman.md
 ```
 
-With frontmatter `from: upstream`, `to: foreman`, `id: 7f3d2e1a`.
+frontmatter 是 `from: upstream`、`to: foreman`、`id: 7f3d2e1a`。
 
-The tool call returns immediately with the file path and id. No blocking
-on the foreman.
+工具调用立即返回文件路径和 id。**不阻塞**等 foreman。
 
-### 3. court-watcher routes it
+### 3. court-watcher 路由它
 
-`fswatch` reports the new file. The watcher parses the frontmatter:
+`fswatch` 报新文件。watcher 解析 frontmatter：
 
 ```
 mv .../bus/upstream/outbox/<file>.md  →  .../bus/foreman/inbox/<file>.md
-append .../shared/event.log:
+追加 .../shared/event.log:
   2026-05-11T15:00:00+08:00 | upstream -> foreman | id=7f3d2e1a | Verify PR #42 ...
 tmux send-keys -t court-myproject:foreman "[notify] new inbox from upstream (id=7f3d2e1a): <file>"
 ```
 
-### 4. Foreman reads, dispatches
+### 4. Foreman 读取后分派
 
-The foreman's LLM (in tmux window `foreman`) sees the `[notify]` line,
-reads `bus/foreman/inbox/<file>.md`, decides this is a backend job, writes:
+foreman 的 LLM（在 tmux 窗口 `foreman` 里）看到 `[notify]` 行，
+读 `bus/foreman/inbox/<file>.md`，决定这是 backend 的活，写：
 
 ```
 .../bus/foreman/outbox/1715432410-a2b1c0d9-foreman-to-backend.md
@@ -108,18 +102,18 @@ reads `bus/foreman/inbox/<file>.md`, decides this is a backend job, writes:
   body: "Backend, please run regression tests on the auth code path..."
 ```
 
-Then `mv` the original to `bus/foreman/inbox/.done/`.
+然后 `mv` 原始消息到 `bus/foreman/inbox/.done/`。
 
-The watcher routes the new file the same way. Backend gets notified.
+watcher 用同样的方式路由新文件。backend 收到通知。
 
-### 5. Backend works, replies
+### 5. Backend 干活并回复
 
-Backend's LLM does the work in its `work_dir` and writes its reply
-addressed to `foreman` with `in_reply_to: a2b1c0d9`. Watcher routes it back.
+backend 的 LLM 在自己的 `work_dir` 里干完活，把回复写到 outbox，
+收件人是 `foreman`，`in_reply_to: a2b1c0d9`。watcher 把它路由回去。
 
-### 6. Foreman summarises to upstream
+### 6. Foreman 汇总回上游
 
-Foreman reads backend's reply, decides the task is complete, writes:
+foreman 读 backend 的回复，判定任务完成，写：
 
 ```
 .../bus/foreman/outbox/<file>.md
@@ -129,11 +123,11 @@ Foreman reads backend's reply, decides the task is complete, writes:
   body: "Done. PR #42 doesn't regress the auth flow. backend ran the suite at ..."
 ```
 
-Watcher routes it to `bus/upstream/inbox/`.
+watcher 把它路由进 `bus/upstream/inbox/`。
 
-### 7. Upstream LLM picks it up
+### 7. 上游 LLM 取回
 
-Claude Code calls:
+Claude Code 调用：
 
 ```json
 {
@@ -145,64 +139,56 @@ Claude Code calls:
 }
 ```
 
-`court-mcp` returns the parsed message. Claude Code summarises it back to
-the human.
+`court-mcp` 返回解析后的消息。Claude Code 把它向人类汇报。
 
-## Design choices, briefly
+## 简短的设计选择
 
-### Why files?
+### 为什么用文件？
 
-- **Inspectable**: `cat`, `ls`, `grep` work.
-- **Durable**: surviving a crash means inspecting the bus, not a memory
-  dump.
-- **Decoupled**: senders and receivers don't need to be alive at the same
-  time. If the foreman's LLM is mid-response when a new dispatch arrives,
-  the file sits in the inbox until the foreman gets to it.
-- **Forkable**: you can copy a single `*.md` file to test a role's
-  reaction to a known input.
+- **可观察**：`cat`、`ls`、`grep` 都直接管用。
+- **持久**：崩了之后能从总线翻状态，不用看内存快照。
+- **解耦**：发送方和接收方不用同时活着。如果 foreman 的 LLM 正在
+  回复别的事，新派的活就坐在 inbox 里等。
+- **可分叉**：把一个 `*.md` 拷出来，就能针对已知输入复现某个 role 的反应。
 
-### Why tmux + real CLIs?
+### 为什么 tmux + 真的 CLI？
 
-- You can `attach`, watch, and *interject* mid-conversation by typing
-  directly into a role's window.
-- Cost / token usage is visible per role.
-- Tools each CLI ships with (file edits, shell, etc.) are available
-  inside each role without any wrapper.
+- 你可以 `attach`、观察、甚至**在对话中间直接键入插话**。
+- token 用量按 role 可见。
+- 每个 CLI 自带的工具（文件编辑、shell 等）在 role 内可直接使用，
+  不需要任何 wrapper。
 
-### Why one watcher per project?
+### 为什么每个 project 一个 watcher？
 
-- One watcher = one tmux session = one project. They don't share state, so
-  spinning up another project is `cp -r` and a second `court-up`.
-- Each watcher's `fswatch` only walks one project's `bus/` tree → cheap.
+- 一个 watcher = 一个 tmux session = 一个 project。它们不共享状态，
+  起一个新 project 就是 `cp -r` 加再来一次 `court-up`。
+- 每个 watcher 的 `fswatch` 只扫一个 project 的 `bus/` 树 → 廉价。
 
-### Why upstream is just another role
+### 为什么上游也只是普通 role？
 
-`upstream/outbox` and `upstream/inbox` are normal bus directories. The MCP
-server writes to outbox and reads from inbox; it gets no special
-treatment from the watcher. This means a human can also "be upstream" by
-running `court-send --from upstream ...` and replies will land where the
-MCP server would have looked.
+`upstream/outbox` 和 `upstream/inbox` 是常规的总线目录。MCP server
+往 outbox 写、从 inbox 读；watcher 不给它任何特殊待遇。这意味着
+人类自己也可以"扮演 upstream"，用 `court-send --from upstream ...`
+来发消息，回复也会落到 MCP server 原本去取的地方。
 
-## What this isn't
+## 它**不是**什么
 
-- **Not a scheduler.** Roles process inbox files in arrival order at their
-  own pace. If you want fairness, throttling, retries, or priority queues,
-  you build them on top.
-- **Not a sandbox.** Each role runs with full host privileges of its CLI.
-  If you need isolation, run each role inside Docker / a remote dev box
-  and point its `work_dir` accordingly.
-- **Not multi-machine.** The bus is the filesystem. To go cross-machine,
-  swap the watcher for one that syncs `bus/` (Syncthing, etc.) or pubsubs
-  the messages.
+- **不是调度器**。各 role 按到达顺序、按自己的节奏处理 inbox。
+  想要公平性、限流、重试、优先级队列，你自己叠在上面。
+- **不是沙箱**。每个 role 都用对应 CLI 的全部宿主权限跑。如果你需要
+  隔离，把 role 跑在 Docker / 远端开发机里，把它的 `work_dir`
+  指过去。
+- **不是跨机的**。总线就是文件系统。要跨机，要么把 watcher 换成
+  能同步 `bus/` 的（Syncthing 等），要么把消息走 pubsub。
 
-## Extending
+## 扩展
 
-- **Add a role**: edit `court.yaml`, drop a prompt file in `prompts/`,
-  `court-down` then `court-up`.
-- **Add a project**: copy `projects/example/`, change `session` + `project`
-  + `work_dir`s, `court-up <new>`.
-- **Custom CLI**: any LLM CLI that accepts a system-prompt flag works. Set
-  `default_cli` in `court.yaml`, or override per-role with `cli`. Wrap
-  exotic flags in a small shell script if needed.
-- **Custom upstream**: write any client that speaks MCP; or skip MCP
-  entirely and call `court-send --from upstream ...` from a webhook.
+- **加一个 role**：改 `court.yaml`，往 `prompts/` 丢一份 prompt 文件，
+  `court-down` 再 `court-up`。
+- **加一个 project**：拷一份 `projects/example/`，改 `session` + `project`
+  + 各 `work_dir`，然后 `court-up <new>`。
+- **换 CLI**：任何接受 system-prompt 参数的 LLM CLI 都能用。
+  在 `court.yaml` 里设 `default_cli`，或在 role 级用 `cli` 字段覆盖。
+  CLI flag 不一样的可以包一层小 shell 脚本。
+- **自定义上游**：写任何说 MCP 的客户端；或者完全不用 MCP，从 webhook
+  里调 `court-send --from upstream ...`。
