@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# agent-court — message bus watcher daemon for a single project.
+#
+# Watches: $COURT_ROOT/projects/<project>/bus/*/outbox/
+# Routes:  outbox/<file>.md -> bus/<to>/inbox/<file>.md
+# Side-effects: appends shared/event.log, tmux send-keys notify into target window.
+#
+# Usually started by court-up; can be invoked standalone for testing.
+set -uo pipefail
+
+PROJECT="${1:-}"
+if [ -z "$PROJECT" ]; then
+  echo "[court-watcher] usage: court-watcher <project>" >&2
+  exit 1
+fi
+
+ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+PROJ_ROOT="$ROOT/projects/$PROJECT"
+BUS="$PROJ_ROOT/bus"
+EVENT_LOG="$PROJ_ROOT/shared/event.log"
+CFG="$PROJ_ROOT/court.yaml"
+
+[ -f "$CFG" ] || { echo "[court-watcher] missing $CFG" >&2; exit 1; }
+
+SESSION=$(yq -r '.session' "$CFG")
+
+mkdir -p "$PROJ_ROOT/logs"
+mkdir -p "$(dirname "$EVENT_LOG")"
+
+log() {
+  echo "[$(date -Iseconds)] [$PROJECT] $*" >&2
+}
+
+parse_field() {
+  local file="$1"
+  local key="$2"
+  awk -v k="$key" '
+    BEGIN { in_fm=0 }
+    /^---$/ { in_fm = !in_fm; next }
+    in_fm && $1 == k":" { sub(/^[^:]+:[[:space:]]*/, ""); print; exit }
+  ' "$file"
+}
+
+handle() {
+  local outbox_file="$1"
+
+  [ -f "$outbox_file" ] || return 0
+  case "$outbox_file" in
+    */outbox/*.md) ;;
+    *) return 0 ;;
+  esac
+
+  # let the writer finish flushing
+  sleep 0.15
+
+  local from to id ts in_reply_to body_preview
+  from=$(parse_field "$outbox_file" "from")
+  to=$(parse_field "$outbox_file" "to")
+  id=$(parse_field "$outbox_file" "id")
+  ts=$(parse_field "$outbox_file" "ts")
+  in_reply_to=$(parse_field "$outbox_file" "in_reply_to")
+
+  if [ -z "$from" ] || [ -z "$to" ] || [ -z "$id" ]; then
+    log "skip $outbox_file (frontmatter missing from/to/id)"
+    return 0
+  fi
+
+  local target_inbox="$BUS/$to/inbox"
+  if [ ! -d "$target_inbox" ]; then
+    log "skip $outbox_file: target role '$to' not registered (no $target_inbox/)"
+    return 0
+  fi
+
+  local fname target_file
+  fname=$(basename "$outbox_file")
+  target_file="$target_inbox/$fname"
+
+  if ! mv "$outbox_file" "$target_file"; then
+    log "mv failed: $outbox_file -> $target_file"
+    return 0
+  fi
+
+  body_preview=$(awk '
+    /^---$/ { in_fm = !in_fm; next }
+    !in_fm && NF > 0 { print; exit }
+  ' "$target_file" | cut -c1-100)
+
+  local reply_part=""
+  [ -n "$in_reply_to" ] && reply_part=" (reply to $in_reply_to)"
+  printf '%s | %s -> %s | id=%s%s | %s\n' \
+    "$(date -Iseconds)" "$from" "$to" "$id" "$reply_part" "$body_preview" \
+    >>"$EVENT_LOG"
+
+  if tmux has-session -t "$SESSION" 2>/dev/null; then
+    if tmux list-windows -t "$SESSION" -F '#W' | grep -qx "$to"; then
+      tmux send-keys -t "$SESSION:$to" \
+        "[notify] new inbox from $from (id=$id): $fname" Enter
+    else
+      log "tmux session '$SESSION' has no window '$to', skipping send-keys"
+    fi
+  fi
+
+  log "routed: $from -> $to (id=$id, file=$fname)"
+}
+
+log "watcher started, watching $BUS"
+log "session=$SESSION, event_log=$EVENT_LOG"
+
+# drain any leftover outbox files from a previous run
+for outbox_file in "$BUS"/*/outbox/*.md; do
+  [ -f "$outbox_file" ] && handle "$outbox_file"
+done
+
+# live tail
+fswatch -0 -r --latency 0.2 "$BUS" --event Created --event MovedTo --event Updated \
+  | while IFS= read -r -d '' file; do
+      handle "$file"
+    done

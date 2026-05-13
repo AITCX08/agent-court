@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# agent-court — stop a court (kill tmux session + watcher daemon).
+set -e
+
+PROJECT="${1:-}"
+if [ -z "$PROJECT" ]; then
+  echo "[court-down] usage: court-down <project>" >&2
+  exit 1
+fi
+
+ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+PROJ_ROOT="$ROOT/projects/$PROJECT"
+LOGS="$PROJ_ROOT/logs"
+CFG="$PROJ_ROOT/court.yaml"
+WATCHER_PID_FILE="$LOGS/watcher.pid"
+
+[ -f "$CFG" ] || { echo "[court-down] missing $CFG" >&2; exit 1; }
+
+SESSION=$(yq -r '.session' "$CFG")
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "[court-down:$PROJECT] killing tmux session '$SESSION'"
+  tmux kill-session -t "$SESSION"
+else
+  echo "[court-down:$PROJECT] tmux session '$SESSION' not running"
+fi
+
+if [ -f "$WATCHER_PID_FILE" ]; then
+  PID=$(cat "$WATCHER_PID_FILE")
+  if kill -0 "$PID" 2>/dev/null; then
+    echo "[court-down:$PROJECT] kill watcher (pid $PID)"
+    kill "$PID"
+    sleep 0.3
+    kill -9 "$PID" 2>/dev/null || true
+  fi
+  rm -f "$WATCHER_PID_FILE"
+fi
+
+pkill -f "fswatch.*$PROJ_ROOT/bus" 2>/dev/null || true
+
+echo "[court-down:$PROJECT] done"

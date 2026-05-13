@@ -2,22 +2,22 @@
 
 # LAN deployment — two-machine quickstart
 
-Walk-through for getting two `agent-yamen` projects talking on the same
+Walk-through for getting two `agent-court` projects talking on the same
 local network. No public IPs, no VPN — works the moment both machines
 can ping each other on the LAN.
 
 > Status: PR-1 (HTTP + signing + role whitelist), PR-2 (policy
 > engine + path/keyword gating + pending-approval bin), PR-3 (LLM
 > judge with fail-safe fallback), and PR-4 (sudo-style temporary
-> path grants via `banling`) are live. Still ahead: PR-5
+> path grants via `court-grant`) are live. Still ahead: PR-5
 > multi-channel human approval (FeiShu/WeChat), PR-6 IM redundancy,
 > and TLS.
 
 ## Mental model first
 
 A "court" lives at **one project on one machine** —
-`$YAMEN_ROOT/projects/<project>/`. Each project has its own keypair,
-its own `bangjiao.yaml`, and its own `yamen_id`. Two projects on the same
+`$COURT_ROOT/projects/<project>/`. Each project has its own keypair,
+its own `peers.yaml`, and its own `court_id`. Two projects on the same
 machine cannot infer each other's existence; they are separate courts
 to the outside world.
 
@@ -29,17 +29,17 @@ you want federated**. Generating a keypair once for `project-A` does
 
 On each machine:
 
-1. `agent-yamen` checked out, `bin/` on PATH.
+1. `agent-court` checked out, `bin/` on PATH.
 2. The MCP server venv installed:
    ```bash
-   cd /path/to/agent-yamen/mcp/yamen-mcp
+   cd /path/to/agent-court/mcp/court-mcp
    uv venv .venv
    uv pip install --python .venv/bin/python -e .
    ```
 3. The project you want to federate exists under
-   `$YAMEN_ROOT/projects/<project>/`. The shipped example works:
+   `$COURT_ROOT/projects/<project>/`. The shipped example works:
    ```bash
-   cp -r projects/example ~/.agent-yamen/projects/example
+   cp -r projects/example ~/.agent-court/projects/example
    ```
 
 ## 1. Generate the project's keypair
@@ -47,47 +47,47 @@ On each machine:
 On **Alice's** machine, for the `example` project:
 
 ```
-$ zhuyin example
-[zhuyin] new keypair for project 'example':
-  /Users/alice/.agent-yamen/projects/example/identity/priv.key  (mode 0600)
-  /Users/alice/.agent-yamen/projects/example/identity/pub.key   (mode 0644)
+$ court-keygen example
+[court-keygen] new keypair for project 'example':
+  /Users/alice/.agent-court/projects/example/identity/priv.key  (mode 0600)
+  /Users/alice/.agent-court/projects/example/identity/pub.key   (mode 0644)
 
 public key      : MCowBQYDK2VwAyEAaG6...     # base64 ed25519 pubkey
 fingerprint     : 7a4c0b9e3d2f8a16          # SHA-256 prefix, 16 hex chars
 
 Share both with the peer who will federate with this project.
-They paste them into THEIR project's bangjiao.yaml under the entry for you.
+They paste them into THEIR project's peers.yaml under the entry for you.
 ```
 
 On **Bob's** machine: same, for *his* `example` project. Each side now
 has a per-project `priv.key` / `pub.key` under that project's
 `identity/` directory.
 
-Re-running `zhuyin example` is a no-op unless you pass `--force`.
+Re-running `court-keygen example` is a no-op unless you pass `--force`.
 
-## 2. Enable federation in `yamen.yaml`
+## 2. Enable federation in `court.yaml`
 
-By default the `bangjiao:` block in `yamen.yaml` is commented out —
+By default the `federation:` block in `court.yaml` is commented out —
 the daemon refuses to start. Uncomment it (or write your own) and
 configure the whitelist:
 
 ```yaml
-# ~/.agent-yamen/projects/example/yamen.yaml
-bangjiao:
+# ~/.agent-court/projects/example/court.yaml
+federation:
   enabled: true
 
-  # Your yamen_id on the network. Defaults to "<hostname>-<project>".
-  yamen_id: "alice-laptop-example"
+  # Your court_id on the network. Defaults to "<hostname>-<project>".
+  court_id: "alice-laptop-example"
 
-  # Which roles outside peers may dispatch *to*. Default: only zongguan.
+  # Which roles outside peers may dispatch *to*. Default: only foreman.
   expose_roles:
-    - zongguan
+    - foreman
 
   # PR-2: paths the policy engine checks any inbound `attaches:` field
   # against. Allow non-empty + attach not covered → human_required.
   # Deny match (here OR in the hardcoded list) → denied.
   allow_paths:
-    - "bus/zongguan/inbox/**"
+    - "bus/foreman/inbox/**"
     - "shared/notes-public.md"
   deny_paths:
     - "prompts/**"
@@ -105,31 +105,31 @@ Out of band (Signal, in-person, etc.), share for each project:
 
 | Field | Value to send |
 |---|---|
-| `yamen_id` | What the other side will reference you as. Defaults to `<hostname>-<project>`; override under `bangjiao.yamen_id` in `yamen.yaml`. |
-| `fingerprint` | The 16-byte hex `zhuyin` printed. Lets the other side eyeball-verify the key on first paste. |
-| `pub_key_b64` | The full base64 public key (also from `zhuyin` output, or `cat $YAMEN_ROOT/projects/<project>/identity/pub.key`). **Required at runtime** — without it the peer cannot verify your signatures. |
+| `court_id` | What the other side will reference you as. Defaults to `<hostname>-<project>`; override under `federation.court_id` in `court.yaml`. |
+| `fingerprint` | The 16-byte hex `court-keygen` printed. Lets the other side eyeball-verify the key on first paste. |
+| `pub_key_b64` | The full base64 public key (also from `court-keygen` output, or `cat $COURT_ROOT/projects/<project>/identity/pub.key`). **Required at runtime** — without it the peer cannot verify your signatures. |
 
-## 4. Write `bangjiao.yaml` on each side
+## 4. Write `peers.yaml` on each side
 
 This file lives **inside the project**, not in a shared config dir.
 
-`~/.agent-yamen/projects/example/bangjiao.yaml` on Alice:
+`~/.agent-court/projects/example/peers.yaml` on Alice:
 
 ```yaml
 self:
-  yamen_id: "alice-laptop-example"
+  court_id: "alice-laptop-example"
   pub_key_fingerprint: "7a4c0b9e3d2f8a16"     # informational
 
 peers:
   - name: "Bob"
-    yamen_id: "bob-laptop-example"
+    court_id: "bob-laptop-example"
     url: "http://192.168.1.50:8765"
     pub_key_fingerprint: "f0e1d2c3b4a59687"
     pub_key_b64: "MCowBQYDK2VwAyEAhV0z..."     # Bob's public key
     relation: "sibling"                        # parent | child | sibling
 ```
 
-`~/.agent-yamen/projects/example/bangjiao.yaml` on Bob — symmetric, listing
+`~/.agent-court/projects/example/peers.yaml` on Bob — symmetric, listing
 Alice (with `relation: sibling` on his side too).
 
 Replace IPs with your own. `ip addr` on Linux or `ipconfig getifaddr en0`
@@ -146,52 +146,52 @@ on macOS to find your LAN address.
 On each side, **per project** you want to receive:
 
 ```bash
-tongzheng example
+court-peer example
 ```
 
 This binds `0.0.0.0:8765` and serves `POST /inbox` + `GET /healthz`.
-Override the bind with `--bind` or `YAMEN_BIND`:
+Override the bind with `--bind` or `COURT_PEER_BIND`:
 
 ```bash
-YAMEN_BIND=192.168.1.50:9000 tongzheng example
+COURT_PEER_BIND=192.168.1.50:9000 court-peer example
 ```
 
 If you federate multiple projects on the same machine, give each its
 own port:
 
 ```bash
-YAMEN_BIND=0.0.0.0:8765 nohup tongzheng example   > ~/.agent-yamen/logs/peer-example.log 2>&1 &
-YAMEN_BIND=0.0.0.0:8766 nohup tongzheng client-a  > ~/.agent-yamen/logs/peer-client-a.log 2>&1 &
-YAMEN_BIND=0.0.0.0:8767 nohup tongzheng ops       > ~/.agent-yamen/logs/peer-ops.log 2>&1 &
+COURT_PEER_BIND=0.0.0.0:8765 nohup court-peer example   > ~/.agent-court/logs/peer-example.log 2>&1 &
+COURT_PEER_BIND=0.0.0.0:8766 nohup court-peer client-a  > ~/.agent-court/logs/peer-client-a.log 2>&1 &
+COURT_PEER_BIND=0.0.0.0:8767 nohup court-peer ops       > ~/.agent-court/logs/peer-ops.log 2>&1 &
 ```
 
 Each project gets a different peer URL (e.g. `http://host:8765` vs
 `http://host:8766`); the remote side puts whichever URL they need
-into their `bangjiao.yaml` entry for that project.
+into their `peers.yaml` entry for that project.
 
 Identities, peers, policies, and bus directories are all
 project-scoped — three daemons on the same host effectively run
 three independent courts, and a remote peer authorized to dispatch
 into `example` cannot in any way reach `client-a` or `ops`.
 
-If federation is disabled in that project's `yamen.yaml`, the daemon
+If federation is disabled in that project's `court.yaml`, the daemon
 refuses to start with a pointer to the config block.
 
 ## 6. Send a test message from Alice → Bob
 
-From any MCP-aware client connected to Alice's `yamen-mcp` server
+From any MCP-aware client connected to Alice's `court-mcp` server
 (Claude Code, Cursor, Zed, a custom assistant), call:
 
 ```python
-lie_fanbang(project="example")
-# returns: {project, self: {yamen_id, fingerprint, bangjiao_enabled, ...},
+list_peers(project="example")
+# returns: {project, self: {court_id, fingerprint, federation_enabled, ...},
 #           peers: [...]}.  reachable=true once Bob's daemon is up.
 
-guoshu_fanbang(
+dispatch_to_peer(
     project="example",
-    peer_yamen_id="bob-laptop-example",
+    peer_court_id="bob-laptop-example",
     message="hi from Alice — please look at issue #42",
-    target_role="zongguan",
+    target_role="foreman",
 )
 # returns: {
 #   http_status: 200,
@@ -206,23 +206,23 @@ guoshu_fanbang(
 On Bob's machine the file shows up at:
 
 ```
-~/.agent-yamen/projects/example/bus/alice-laptop-example/inbox/1715432400-7f3d2e1a-upstream-to-zongguan.md
+~/.agent-court/projects/example/bus/alice-laptop-example/inbox/1715432400-7f3d2e1a-upstream-to-foreman.md
 ```
 
-Bob still has to surface that file to his zongguan manually for now —
-the `qijuguan` daemon only listens on the local roles'
+Bob still has to surface that file to his foreman manually for now —
+the `court-watcher` daemon only listens on the local roles'
 `*/outbox/` directories, so peer-inbox files sit there until someone
 reads them. The supported workflow today:
 
 ```bash
 # On the receiver, periodically:
-ls ~/.agent-yamen/projects/example/bus/*/inbox/*.md
-# Promote any file you want delivered to the zongguan:
-mv .../bus/<peer-yamen-id>/inbox/<file>.md \
-   .../bus/zongguan/inbox/<file>.md
+ls ~/.agent-court/projects/example/bus/*/inbox/*.md
+# Promote any file you want delivered to the foreman:
+mv .../bus/<peer-court-id>/inbox/<file>.md \
+   .../bus/foreman/inbox/<file>.md
 ```
 
-A future PR will teach `qijuguan` to also auto-route peer-inbox
+A future PR will teach `court-watcher` to also auto-route peer-inbox
 files into the target role's inbox once the policy decision says
 `auto_pass`.
 
@@ -233,11 +233,11 @@ engine grades it and routes it to one of three on-disk locations:
 
 | Decision | Lands at | Means |
 |---|---|---|
-| `auto_pass` / `judge` | `bus/<peer>/inbox/` | Delivered to zongguan normally |
+| `auto_pass` / `judge` | `bus/<peer>/inbox/` | Delivered to foreman normally |
 | `human_required` | `bus/<peer>/pending-approval/` | Waiting — a human must `mv` it into inbox |
-| `denied` | `bus/<peer>/denied/` | Audit-only; never reaches zongguan |
+| `denied` | `bus/<peer>/denied/` | Audit-only; never reaches foreman |
 
-The response from `guoshu_fanbang` always shows the decision so the
+The response from `dispatch_to_peer` always shows the decision so the
 sender's LLM can react:
 
 ```json
@@ -253,9 +253,9 @@ sender's LLM can react:
 }
 ```
 
-### Optional: `lvli.yaml`
+### Optional: `policy.yaml`
 
-Add `~/.agent-yamen/projects/example/lvli.yaml` to tune the default
+Add `~/.agent-court/projects/example/policy.yaml` to tune the default
 tier and add custom sensitive keywords:
 
 ```yaml
@@ -272,19 +272,19 @@ If the file is missing the defaults are `tier_b` + no extra keywords.
 When a message hits the `tier_b → judge` slot the daemon invokes an
 LLM CLI to decide between `auto_pass` and `human_required`. With no
 configuration the daemon uses `claude` (or whatever `default_cli` in
-`yamen.yaml` is) and a built-in prompt at
-`mcp/yamen-mcp/prompts/tuiguan.md`.
+`court.yaml` is) and a built-in prompt at
+`mcp/court-mcp/prompts/judge.md`.
 
 ```yaml
-# ~/.agent-yamen/projects/example/yamen.yaml
+# ~/.agent-court/projects/example/court.yaml
 default_cli: claude               # also used by the LLM judge
 
-bangjiao:
+federation:
   enabled: true
   judge:
     # cli: claude                 # override default_cli for the judge only
     # model: haiku                # --model flag (passes through to the CLI)
-    # prompt_file: /etc/agent-yamen/strict-judge.md
+    # prompt_file: /etc/agent-court/strict-judge.md
     timeout_seconds: 30
     confidence_threshold: 0.6
 ```
@@ -298,7 +298,7 @@ The judge's prompt asks for strict JSON:
 Anything that goes wrong (CLI missing, timeout, unparseable output,
 confidence below `confidence_threshold`) **fails safe** to
 `human_required`. The exact failure mode is preserved in the
-`panduo.jsonl` `reasons` array — tail it after suspicious
+`policy-log.jsonl` `reasons` array — tail it after suspicious
 deliveries.
 
 Use a custom `prompt_file` to teach the judge about your project's
@@ -312,7 +312,7 @@ When the *receiver* wants to let a specific peer poke at a file
 outside `allow_paths` for a short while ("just look at
 `notes/q2-plan.md` for the next 30 minutes"), or wave a single
 message past the soft-tier review, they mint a grant instead of
-editing `yamen.yaml`. Grants are time-bounded, peer-scoped, and
+editing `court.yaml`. Grants are time-bounded, peer-scoped, and
 only ever *add* capabilities — hardcoded denies (`.ssh`, `.env`,
 `/etc`, `credentials.json`, etc.) and the user's own `deny_paths`
 always still win.
@@ -326,22 +326,22 @@ Two grant types:
 
 ```bash
 # Path grants — common case: `add` is implicit.
-banling example bob "notes/**"
-banling example bob "shared/draft-*.md" --ttl 2h
+court-grant example bob "notes/**"
+court-grant example bob "shared/draft-*.md" --ttl 2h
 
 # Tier grants — pass --tier <tier>. Add --once for fire-once semantics.
-banling example bob --tier tier_c --once          # one free pass
-banling example bob --tier tier_c --ttl 1h        # window of trust
+court-grant example bob --tier tier_c --once          # one free pass
+court-grant example bob --tier tier_c --ttl 1h        # window of trust
 
 # List active + expired grants for a project.
-banling example list
+court-grant example list
 # STATE     T ID         PEER  EXPIRES                       HITS DETAIL
 # active    P 4616c19a   bob   2026-05-13T22:53:00+08:00     0    notes/**
 # active    T 7fa20bd8   bob   2026-05-13T23:00:00+08:00     0    →tier_c [once]
 # consumed  T 9a01ee3c   bob   2026-05-13T22:00:00+08:00     1    →tier_c [once]
 
 # Inspect one grant in detail.
-banling example info 4616c19a
+court-grant example info 4616c19a
 # id            : 4616c19a
 # grant_type    : path
 # state         : active
@@ -353,14 +353,14 @@ banling example info 4616c19a
 # remaining     : 27m13s
 # hit_count     : 2
 # last_hit_ts   : 2026-05-13T22:35:18+08:00
-# file          : /Users/alice/.agent-yamen/projects/example/grants/4616c19a.json
+# file          : /Users/alice/.agent-court/projects/example/grants/4616c19a.json
 
 # Kill a grant before its TTL.
-banling example revoke 4616c19a
+court-grant example revoke 4616c19a
 ```
 
 Each grant is a JSON file at
-`$YAMEN_ROOT/projects/<p>/grants/<id>.json`, written atomically
+`$COURT_ROOT/projects/<p>/grants/<id>.json`, written atomically
 (`tempfile + os.replace`) so a daemon reading the directory never
 sees a half-written record. Durable across restarts — no
 in-memory state to lose. The daemon re-reads `grants/` on every
@@ -373,7 +373,7 @@ Field reference (the on-disk JSON shape):
 |---|---|---|
 | `id` | string | 8 hex chars; doubles as filename. |
 | `grant_type` | `"path"` \| `"tier"` | Which knob this grant turns. |
-| `granted_to` | string | Peer `yamen_id`. Must match `from_court` on inbound. |
+| `granted_to` | string | Peer `court_id`. Must match `from_court` on inbound. |
 | `paths` | list[string] | (path grant) globs OR'd into `allow_paths`. |
 | `target_tier` | string | (tier grant) `tier_a` / `tier_b` / `tier_c`. |
 | `consume_on_use` | bool | (tier grant) if true, marks consumed after first hit. |
@@ -387,31 +387,31 @@ The same surface is exposed via MCP for upstream LLMs that have
 been delegated this authority:
 
 ```python
-ban_luyin(
+grant_peer_access(
     project="example",
-    peer_yamen_id="bob-laptop-example",
+    peer_court_id="bob-laptop-example",
     paths=["notes/**"],
     ttl="1h",
 )
 # → {project, id, grant_type: "path", granted_to, paths, ...,
 #    hit_count: 0, remaining_seconds: 3600}
 
-sheng_pinji(
+grant_peer_tier(
     project="example",
-    peer_yamen_id="bob-laptop-example",
+    peer_court_id="bob-laptop-example",
     target_tier="tier_c",
     consume_on_use=True,
 )
 # → {project, id, grant_type: "tier", target_tier, consume_on_use, ...}
 
-lie_lingpai(project="example")
+list_grants(project="example")
 # → {project, active: [...], expired: [...]} (each entry includes
 #   grant_type, hit_count, remaining_seconds)
 
-kan_lingpai(project="example", grant_id="4616c19a")
+grant_info(project="example", grant_id="4616c19a")
 # → {state: "active"|"expired", ...full record...}
 
-zhui_lingpai(project="example", grant_id="4616c19a")
+revoke_grant(project="example", grant_id="4616c19a")
 # → {ok: true, result: "revoked", grant_id}
 # Errors: invalid_id | not_found | io_error
 ```
@@ -420,7 +420,7 @@ zhui_lingpai(project="example", grant_id="4616c19a")
 
 - **Path containment.** Every grant entry point validates `project`
   as a safe filesystem component AND verifies the resolved
-  directory lives strictly inside `$YAMEN_ROOT/projects/`. A caller
+  directory lives strictly inside `$COURT_ROOT/projects/`. A caller
   supplying `project="../foo"` gets an error instead of arbitrary
   filesystem access.
 - **TTL cap.** `parse_ttl` rejects values past 1 year so datetime
@@ -428,18 +428,18 @@ zhui_lingpai(project="example", grant_id="4616c19a")
   `invalid_argument` error.
 - **Strict JSON schema.** Grant files are parsed strictly on read;
   missing fields, wrong types, or oversized payloads
-  (> 64 KB) are skipped with a warning to `logs/bangjiao-errors.log`
+  (> 64 KB) are skipped with a warning to `logs/peer-errors.log`
   rather than silently honored.
 - **Atomic writes.** Mint / record_hit / mark_consumed all use
   same-directory tempfile + `os.replace`, so a reader iterating
   `glob("*.json")` either sees the old content or the new content,
   never a torn write.
-- **Peer existence check (MCP).** `ban_luyin` /
-  `sheng_pinji` decline to mint when `bangjiao.yaml` is present
-  and the named `peer_yamen_id` isn't in it (prevents typo-driven
+- **Peer existence check (MCP).** `grant_peer_access` /
+  `grant_peer_tier` decline to mint when `peers.yaml` is present
+  and the named `peer_court_id` isn't in it (prevents typo-driven
   "orphan" grants that would silently activate if the peer ever
   joined later). The CLI is loose by design — for bootstrap-time
-  use before `bangjiao.yaml` is wired up.
+  use before `peers.yaml` is wired up.
 
 When an inbound `attaches:` path is covered by an active grant
 (and not by `allow_paths` already), the decision's `reasons`
@@ -456,37 +456,37 @@ Grants survive daemon restarts. Expiry is enforced at read time
 (`is_active(now)`), so a wall-clock change can't accidentally
 revive an expired grant.
 
-### Per-peer tier (in `bangjiao.yaml`)
+### Per-peer tier (in `peers.yaml`)
 
 ```yaml
 peers:
   - name: "External vendor"
-    yamen_id: "vendor-build-bot"
+    court_id: "vendor-build-bot"
     relation: "sibling"
     policy_tier: "tier_a"          # untrusted: everything → pending-approval
 ```
 
-### Trying it: `attaches` + `guoshu_fanbang`
+### Trying it: `attaches` + `dispatch_to_peer`
 
 ```python
-guoshu_fanbang(
+dispatch_to_peer(
     project="example",
-    peer_yamen_id="bob-laptop-example",
+    peer_court_id="bob-laptop-example",
     message="please review the diff",
-    attaches=["bus/zongguan/inbox/diff.md"],   # passes allow_paths
+    attaches=["bus/foreman/inbox/diff.md"],   # passes allow_paths
 )
 # → decision: judge (or auto_pass if tier_c)
 
-guoshu_fanbang(
+dispatch_to_peer(
     project="example",
-    peer_yamen_id="bob-laptop-example",
+    peer_court_id="bob-laptop-example",
     message="here is the prod password=hunter2",
 )
 # → decision: human_required (keyword)
 
-guoshu_fanbang(
+dispatch_to_peer(
     project="example",
-    peer_yamen_id="bob-laptop-example",
+    peer_court_id="bob-laptop-example",
     message="have a look",
     attaches=["~/.ssh/id_ed25519"],
 )
@@ -494,10 +494,10 @@ guoshu_fanbang(
 ```
 
 The decision trail is appended to
-`~/.agent-yamen/projects/example/logs/panduo.jsonl`:
+`~/.agent-court/projects/example/logs/policy-log.jsonl`:
 
 ```bash
-tail -f ~/.agent-yamen/projects/example/logs/panduo.jsonl
+tail -f ~/.agent-court/projects/example/logs/policy-log.jsonl
 ```
 
 ### Approving a `pending-approval` message
@@ -506,25 +506,25 @@ There is no approval UI yet (PR-5 adds terminal + FeiShu + WeChat).
 For now, eyeball the file and move it manually:
 
 ```bash
-cd ~/.agent-yamen/projects/example/bus/alice-laptop-example
+cd ~/.agent-court/projects/example/bus/alice-laptop-example
 cat pending-approval/*.md           # read the body + policy_reasons
-mv pending-approval/<file>.md inbox/   # release to zongguan
+mv pending-approval/<file>.md inbox/   # release to foreman
 ```
 
 ## Firewall checklist
 
-`tongzheng` is plain HTTP, no TLS. Open the port both ways on each
+`court-peer` is plain HTTP, no TLS. Open the port both ways on each
 machine's firewall — most home LANs are wide open already.
 
 | OS | Allow inbound TCP 8765 |
 |---|---|
-| macOS | `System Settings → Network → Firewall → Options → Add tongzheng's python binary "Allow"` |
+| macOS | `System Settings → Network → Firewall → Options → Add court-peer's python binary "Allow"` |
 | Ubuntu | `sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp` |
-| Windows | `New-NetFirewallRule -DisplayName "agent-yamen" -Direction Inbound -LocalPort 8765 -Protocol TCP -Action Allow` |
+| Windows | `New-NetFirewallRule -DisplayName "agent-court" -Direction Inbound -LocalPort 8765 -Protocol TCP -Action Allow` |
 
 ## Troubleshooting
 
-### "transport_error" in `guoshu_fanbang` response
+### "transport_error" in `dispatch_to_peer` response
 
 - Verify the URL is reachable: `curl http://192.168.1.50:8765/healthz` from Alice.
 - If `curl` hangs → firewall is dropping. See firewall checklist.
@@ -534,51 +534,51 @@ machine's firewall — most home LANs are wide open already.
 ### 401 `bad_signature` or `missing_peer_pub_key`
 
 - The peer rejected your signature. Almost always one of:
-  - `pub_key_b64` for your `yamen_id` in *their* project's
-    `bangjiao.yaml` doesn't match your current `priv.key`. Did you
-    regenerate `zhuyin`? You must re-share the new public key.
+  - `pub_key_b64` for your `court_id` in *their* project's
+    `peers.yaml` doesn't match your current `priv.key`. Did you
+    regenerate `court-keygen`? You must re-share the new public key.
   - You and the peer disagree on which fields go into the signed
-    payload. Both sides must be on the same `agent-yamen` version.
-  - You pointed `guoshu_fanbang` at the wrong `project=...`, so the
+    payload. Both sides must be on the same `agent-court` version.
+  - You pointed `dispatch_to_peer` at the wrong `project=...`, so the
     private key being used to sign belongs to a different court than
     the peer expects.
-- Check `$YAMEN_ROOT/projects/<project>/logs/bangjiao-errors.log` on the
+- Check `$COURT_ROOT/projects/<project>/logs/peer-errors.log` on the
   receiving side for the specific failure reason.
 
-### 403 `bangjiao_disabled`
+### 403 `federation_disabled`
 
-- The peer's `yamen.yaml` has no `bangjiao:` block, or
-  `bangjiao.enabled: false`. The flag is re-read per-request, so the
+- The peer's `court.yaml` has no `federation:` block, or
+  `federation.enabled: false`. The flag is re-read per-request, so the
   peer can flip it back to `true` without restarting the daemon.
 
 ### 403 `unknown_sender`
 
-- Your `yamen_id` isn't in the peer's `bangjiao.yaml`. Ask them to add
-  you, or check that the `yamen_id` you're using matches what they
-  configured. Remember: each project has its own `bangjiao.yaml` — being
-  listed in their `project-A/bangjiao.yaml` does not grant access to
+- Your `court_id` isn't in the peer's `peers.yaml`. Ask them to add
+  you, or check that the `court_id` you're using matches what they
+  configured. Remember: each project has its own `peers.yaml` — being
+  listed in their `project-A/peers.yaml` does not grant access to
   `project-B`.
 
 ### 403 `role_not_exposed`
 
-- You dispatched to a role not in the peer's `bangjiao.expose_roles`
-  list. By default only `zongguan` is exposed; ask the peer to either
-  route via zongguan or add your target role to `expose_roles`.
+- You dispatched to a role not in the peer's `federation.expose_roles`
+  list. By default only `foreman` is exposed; ask the peer to either
+  route via foreman or add your target role to `expose_roles`.
 
 ### `decision: denied` in response
 
 - An attach matched a deny rule (yours or hardcoded). The message is
-  *not* delivered — it sits in `bus/<your-yamen-id>/denied/` on the
+  *not* delivered — it sits in `bus/<your-court-id>/denied/` on the
   receiver for audit. Inspect the `reasons` field in the response:
   ```
   "reasons": ["attach '/etc/passwd' hits hardcoded deny '/etc/**'"]
   ```
-- Hardcoded denies cannot be lifted from `yamen.yaml` *or* by a
+- Hardcoded denies cannot be lifted from `court.yaml` *or* by a
   PR-4 grant — by design. If you genuinely need that path,
   restructure the dispatch (e.g. paste the relevant content into
   the body). For paths only blocked by your own
   `allow_paths`/`deny_paths`, ask the peer to mint a temporary
-  grant: `banling <project> <your-yamen-id> "<glob>"` (see
+  grant: `court-grant <project> <your-court-id> "<glob>"` (see
   "Temporary grants" above).
 
 ### `decision: human_required` / `status: pending_approval`
@@ -587,9 +587,9 @@ machine's firewall — most home LANs are wide open already.
   body triggered a sensitive-keyword match, or an attach landed
   outside `allow_paths`, or the PR-3 LLM judge upgraded an
   otherwise-passing tier_b message. The file is in
-  `bus/<your-yamen-id>/pending-approval/` on the receiver; a human
+  `bus/<your-court-id>/pending-approval/` on the receiver; a human
   there must `mv` it to `inbox/` to actually deliver.
-- Check the receiver's `logs/panduo.jsonl` — every decision has a
+- Check the receiver's `logs/policy-log.jsonl` — every decision has a
   `reasons` array explaining which rule fired.
 
 ### `tier: llm_judge_failed` showing up in logs
@@ -597,11 +597,11 @@ machine's firewall — most home LANs are wide open already.
 - The PR-3 judge tried to call an LLM CLI and something went wrong.
   Look at the message's `reasons` array — it pins the exact failure:
   - `"cli '<x>' not found on PATH"` → install the CLI on the
-    receiver's machine, or point `bangjiao.judge.cli` at one
+    receiver's machine, or point `federation.judge.cli` at one
     that exists.
   - `"<x> timed out after Ns"` → the CLI took too long. Either
-    raise `bangjiao.judge.timeout_seconds`, or use a faster
-    model via `bangjiao.judge.model`.
+    raise `federation.judge.timeout_seconds`, or use a faster
+    model via `federation.judge.model`.
   - `"<x> exited <n>: ..."` → the CLI errored out (often a quota
     or auth issue). Run the same command by hand to reproduce.
   - `"no JSON object found in LLM output"` / `"verdict must be
@@ -611,7 +611,7 @@ machine's firewall — most home LANs are wide open already.
   judge never *delivers* messages; it just over-flags them. Fix at
   your leisure.
 
-### `lie_fanbang` shows `reachable: false`
+### `list_peers` shows `reachable: false`
 
 - Other side's daemon down or unreachable. Same as the transport_error
   checks above.
@@ -621,10 +621,10 @@ machine's firewall — most home LANs are wide open already.
 For machines on different networks:
 
 - **Recommended**: install [tailscale](https://tailscale.com) on both
-  machines, use the tailscale-assigned IP in `bangjiao.yaml`. Same as LAN
+  machines, use the tailscale-assigned IP in `peers.yaml`. Same as LAN
   from then on, plus end-to-end encryption.
-- **Self-hosted**: run `frp` or `cloudflared` to expose your tongzheng
-  port. Put the public URL in `bangjiao.yaml`. Pair it with a real TLS
+- **Self-hosted**: run `frp` or `cloudflared` to expose your court-peer
+  port. Put the public URL in `peers.yaml`. Pair it with a real TLS
   reverse proxy if the traffic crosses the open internet (PR-1 doesn't
   ship TLS).
 
