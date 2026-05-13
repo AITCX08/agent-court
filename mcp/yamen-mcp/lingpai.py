@@ -1,8 +1,8 @@
-"""agent-court — temporary path-access grants (PR-4).
+"""agent-yamen — temporary path-access grants (PR-4).
 
 A *grant* is a project-scoped record saying "for the next N minutes, this
 peer court is allowed to do <something> on inbound messages". It extends
-``court.yaml``'s static authorization at runtime, without anyone editing
+``yamen.yaml``'s static authorization at runtime, without anyone editing
 yaml.
 
 Two flavors, distinguished by ``grant_type``:
@@ -19,23 +19,23 @@ The intended workflow mirrors sudo:
 .. code-block:: bash
 
     # Path widening
-    court-grant example bob-laptop-example notes/2026-Q2.md --ttl 30m
+    banling example bob-laptop-example notes/2026-Q2.md --ttl 30m
     # ^ Bob may now attach 'notes/2026-Q2.md' for the next 30 min.
 
     # Tier upgrade, one shot
-    court-grant example bob-laptop-example --tier tier_c --once
+    banling example bob-laptop-example --tier tier_c --once
     # ^ Next inbound message from Bob skips human-review.
 
-    court-grant example list
-    court-grant example info <grant-id>
-    court-grant example revoke <grant-id>
+    banling example list
+    banling example info <grant-id>
+    banling example revoke <grant-id>
 
 Storage
 -------
 
 One JSON file per grant, under
-``$COURT_ROOT/projects/<p>/grants/<grant-id>.json``. A separate file
-per grant means ``court-grant list`` is just ``ls`` and revoke is just
+``$YAMEN_ROOT/projects/<p>/grants/<grant-id>.json``. A separate file
+per grant means ``banling list`` is just ``ls`` and revoke is just
 ``rm`` — no central index, nothing to corrupt. Writes are atomic
 (``tempfile + os.replace``) so a reader never sees a half-written
 record even under concurrent mint/load.
@@ -47,16 +47,16 @@ A grant ONLY adds capabilities; it cannot subtract. Neither path nor
 tier grants can:
 
 - override ``HARDCODED_DENY_PATHS`` (system secrets stay blocked);
-- override ``deny_paths`` from ``court.yaml`` (user blacklist wins);
+- override ``deny_paths`` from ``yamen.yaml`` (user blacklist wins);
 - override ``HARDCODED_KEYWORDS`` (sensitive body content still
   triggers ``human_required``).
 
 Tier grants only relax the *tier-derived* action (the soft layer in
-``policy.evaluate``). Path grants only relax the *allow_paths* check.
+``lvli.evaluate``). Path grants only relax the *allow_paths* check.
 
-Granularity is ``(peer_court_id, [paths] | target_tier)`` — the same
+Granularity is ``(peer_yamen_id, [paths] | target_tier)`` — the same
 peer entry that matches ``from_court`` on inbound. Per-role grants
-(e.g. "only Bob's foreman") are deliberately out of scope; the
+(e.g. "only Bob's zongguan") are deliberately out of scope; the
 ``expose_roles`` whitelist already covers that.
 
 Path containment
@@ -65,7 +65,7 @@ Path containment
 All grant entry points run ``project`` through
 :func:`_resolve_project_dir`, which validates the name as a safe path
 component AND verifies the resolved directory lives inside
-``$COURT_ROOT/projects/``. A caller supplying ``project="../etc"``
+``$YAMEN_ROOT/projects/``. A caller supplying ``project="../etc"``
 gets ``ValueError`` instead of arbitrary filesystem access. This
 hardens *only* the PR-4 surface; pre-existing helpers in
 :mod:`peer_lib` and :mod:`server` retain their existing behavior.
@@ -93,7 +93,7 @@ from typing import Optional
 MAX_TTL_SECONDS = 365 * 24 * 3600
 
 # Per-grant JSON file size guard. A normal grant is < 1 KB; anything past
-# this is treated as garbage and skipped (with a warning to peer-errors.log).
+# this is treated as garbage and skipped (with a warning to bangjiao-errors.log).
 MAX_GRANT_FILE_BYTES = 64 * 1024
 
 VALID_TIERS = ("tier_a", "tier_b", "tier_c")
@@ -106,20 +106,20 @@ VALID_GRANT_TYPES = ("path", "tier")
 
 def _resolve_project_dir(project: str) -> Path:
     """Return the project's on-disk dir if it lives strictly inside
-    ``$COURT_ROOT/projects/``. Raises ``ValueError`` otherwise.
+    ``$YAMEN_ROOT/projects/``. Raises ``ValueError`` otherwise.
 
     The guard is twofold:
 
     1. ``project`` itself must be a single safe path component (no slashes,
        no ``..``, only ``[A-Za-z0-9._-]``). This is enforced via
-       :func:`peer_lib.assert_safe_path_component`.
+       :func:`bangjiao.assert_safe_path_component`.
     2. The resolved directory must be a strict descendant of the projects
        root. A symlink that resolves outside the root counts as "outside"
        — better safe than reading via a hostile symlink.
 
     Used by every PR-4 entry point that takes a ``project`` string.
     """
-    from peer_lib import assert_safe_path_component, court_root, UnsafeNameError
+    from bangjiao import assert_safe_path_component, court_root, UnsafeNameError
 
     try:
         assert_safe_path_component(project, field_name="project")
@@ -143,12 +143,12 @@ def grants_dir(project: str) -> Path:
 
 
 def _peer_errors_log(project: str) -> Path:
-    from peer_lib import project_peer_errors_log
+    from bangjiao import project_peer_errors_log
     return project_peer_errors_log(project)
 
 
 def _warn(project: str, message: str) -> None:
-    """Append a warning to ``logs/peer-errors.log``. Never raises."""
+    """Append a warning to ``logs/bangjiao-errors.log``. Never raises."""
     try:
         log = _peer_errors_log(project)
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -175,7 +175,7 @@ class Grant:
         ``"path"`` (default, widens allow_paths) or ``"tier"``
         (overrides peer_tier).
     granted_to : str
-        ``court_id`` of the peer this grant applies to. Must match
+        ``yamen_id`` of the peer this grant applies to. Must match
         ``from_court`` on an inbound message for the grant to apply.
     issued_ts, expires_ts : str
         ISO 8601 timestamps. Issuance and expiry.
@@ -187,7 +187,7 @@ class Grant:
         the grant fires once. Consumed grants behave as expired.
     hit_count : int
         Number of inbound messages this grant has matched. Updated by
-        ``record_hit``. Used by ``court-grant info`` for diagnostics.
+        ``record_hit``. Used by ``banling info`` for diagnostics.
     last_hit_ts : str or None
         ISO timestamp of the most recent hit; None if never used.
 
@@ -195,9 +195,9 @@ class Grant:
     -----------------
     paths : list[str]
         Path globs the peer may attach. Same dialect as
-        ``allow_paths`` in court.yaml (``**/X`` understood, absolute
+        ``allow_paths`` in yamen.yaml (``**/X`` understood, absolute
         paths and ``..`` segments are rejected by
-        ``policy.normalize_attach`` regardless of what's here).
+        ``lvli.normalize_attach`` regardless of what's here).
 
     Tier-grant fields
     -----------------
@@ -360,7 +360,7 @@ def _validate_paths(paths) -> list[str]:
 
 
 def _validate_granted_to(granted_to: str) -> str:
-    from peer_lib import assert_safe_path_component
+    from bangjiao import assert_safe_path_component
     assert_safe_path_component(granted_to, field_name="granted_to")
     return granted_to
 
@@ -458,7 +458,7 @@ def mint_grant(
 def _read_grant_file(p: Path, *, project: Optional[str] = None) -> Optional[Grant]:
     """Strictly parse a grant file. Returns None on any schema violation
     or oversize file; in those cases an entry is appended to
-    ``logs/peer-errors.log`` so an admin can see something's wrong.
+    ``logs/bangjiao-errors.log`` so an admin can see something's wrong.
     """
     try:
         size = p.stat().st_size
@@ -552,9 +552,9 @@ def _read_grant_file(p: Path, *, project: Optional[str] = None) -> Optional[Gran
 def list_grants(project: str) -> list[Grant]:
     """Return every grant on disk for the project (active + expired).
 
-    Sorted by ``issued_ts`` so ``court-grant list`` shows newest last.
+    Sorted by ``issued_ts`` so ``banling list`` shows newest last.
     Malformed JSON files are skipped (and an entry is appended to
-    ``logs/peer-errors.log``) — we never refuse to list grants because
+    ``logs/bangjiao-errors.log``) — we never refuse to list grants because
     of one corrupted entry.
     """
     gdir = grants_dir(project)
@@ -580,7 +580,7 @@ def load_active_grants(project: str) -> list[Grant]:
 
 def find_grant(project: str, grant_id: str) -> Optional[Grant]:
     """Return a single grant by id (active or expired). None if not found."""
-    from peer_lib import UnsafeNameError, assert_safe_path_component
+    from bangjiao import UnsafeNameError, assert_safe_path_component
 
     try:
         assert_safe_path_component(grant_id, field_name="grant_id")
@@ -592,23 +592,23 @@ def find_grant(project: str, grant_id: str) -> Optional[Grant]:
     return _read_grant_file(fpath, project=project)
 
 
-def load_grants_for_peer(project: str, peer_court_id: str) -> list[str]:
+def load_grants_for_peer(project: str, peer_yamen_id: str) -> list[str]:
     """Return the union of allowed path globs from every active *path* grant
-    addressed to ``peer_court_id``. Empty list if none.
+    addressed to ``peer_yamen_id``. Empty list if none.
 
-    This is the shape :func:`policy.evaluate` historically expected — a
+    This is the shape :func:`lvli.evaluate` historically expected — a
     flat list of globs to OR into ``allow_paths``. Tier grants are
     intentionally excluded here; callers that want tier overrides
     should use :func:`load_effective_tier_grant`.
     """
     out: list[str] = []
     for g in load_active_grants(project):
-        if g.granted_to == peer_court_id and g.grant_type == "path":
+        if g.granted_to == peer_yamen_id and g.grant_type == "path":
             out.extend(g.paths)
     return out
 
 
-def load_path_grants_for_peer(project: str, peer_court_id: str) -> list[Grant]:
+def load_path_grants_for_peer(project: str, peer_yamen_id: str) -> list[Grant]:
     """Return the structured list of active *path* grants for a peer.
 
     Same as :func:`load_grants_for_peer` but returns Grant objects so the
@@ -617,7 +617,7 @@ def load_path_grants_for_peer(project: str, peer_court_id: str) -> list[Grant]:
     """
     return [
         g for g in load_active_grants(project)
-        if g.granted_to == peer_court_id and g.grant_type == "path"
+        if g.granted_to == peer_yamen_id and g.grant_type == "path"
     ]
 
 
@@ -627,16 +627,16 @@ def load_path_grants_for_peer(project: str, peer_court_id: str) -> list[Grant]:
 _TIER_PRIORITY = {"tier_a": 0, "tier_b": 1, "tier_c": 2}
 
 
-def load_effective_tier_grant(project: str, peer_court_id: str) -> Optional[Grant]:
+def load_effective_tier_grant(project: str, peer_yamen_id: str) -> Optional[Grant]:
     """Return the active tier grant that wins for this peer, or None.
 
-    Resolution: among all active tier grants addressed to ``peer_court_id``,
+    Resolution: among all active tier grants addressed to ``peer_yamen_id``,
     pick the one with the highest ``target_tier`` priority
     (tier_c > tier_b > tier_a). Ties broken by latest ``issued_ts``.
     """
     candidates = [
         g for g in load_active_grants(project)
-        if g.granted_to == peer_court_id and g.grant_type == "tier"
+        if g.granted_to == peer_yamen_id and g.grant_type == "tier"
     ]
     if not candidates:
         return None
@@ -706,7 +706,7 @@ def revoke_grant(project: str, grant_id: str) -> str:
     Splits the previous bool return so the CLI/MCP layer can surface a
     useful reason instead of a flat "no such grant".
     """
-    from peer_lib import UnsafeNameError, assert_safe_path_component
+    from bangjiao import UnsafeNameError, assert_safe_path_component
 
     try:
         assert_safe_path_component(grant_id, field_name="grant_id")

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# agent-yamen — generate this yamen's ed25519 keypair.
+#
+# Usage:
+#   zhuyin              # generate if absent
+#   zhuyin --force      # regenerate (invalidates trust with peers)
+set -e
+
+BIN="$(cd "$(dirname "$0")" && pwd)"
+MCP_DIR="$(cd "$BIN/.." && pwd)/mcp/yamen-mcp"
+
+VENV_PY="${YAMEN_VENV_PY:-$MCP_DIR/.venv/bin/python}"
+if [ ! -x "$VENV_PY" ]; then
+  echo "[zhuyin] missing python venv at $VENV_PY" >&2
+  echo "[zhuyin] run: cd $MCP_DIR && uv venv .venv && uv pip install --python .venv/bin/python -e ." >&2
+  exit 1
+fi
+
+exec "$VENV_PY" "$MCP_DIR/keygen.py" "$@"

@@ -1,4 +1,4 @@
-"""agent-court — policy engine (PR-2).
+"""agent-yamen — policy engine (PR-2).
 
 Decides what to do with an inbound peer message *after* signature
 verification and role-whitelist checks have already passed.
@@ -16,12 +16,12 @@ Decision actions
   PR-5 wires this branch to multi-channel approvals (terminal +
   FeiShu + WeChat).
 - ``denied``         park in ``bus/<peer>/denied/`` for audit and stop.
-  Never reaches the foreman, ever.
+  Never reaches the zongguan, ever.
 
 Rule layers
 -----------
-**Hard rules** — written in code, NOT overridable from ``policy.yaml``.
-These exist so that a misconfigured ``policy.yaml`` cannot accidentally
+**Hard rules** — written in code, NOT overridable from ``lvli.yaml``.
+These exist so that a misconfigured ``lvli.yaml`` cannot accidentally
 expose system-level secrets.
 
 1. ``HARDCODED_DENY_PATHS`` (e.g. ``**/.ssh/**``, ``**/.env``,
@@ -30,19 +30,19 @@ expose system-level secrets.
    Any case-insensitive substring match in ``body`` → upgrade to
    ``human_required``.
 
-**Project rules** — read from ``court.yaml`` (paths) and
-``policy.yaml`` (tiers + extra keywords).
+**Project rules** — read from ``yamen.yaml`` (paths) and
+``lvli.yaml`` (tiers + extra keywords).
 
-3. User ``deny_paths`` in ``court.yaml`` → ``denied``.
-4. User ``allow_paths`` in ``court.yaml`` non-empty: every attach must
+3. User ``deny_paths`` in ``yamen.yaml`` → ``denied``.
+4. User ``allow_paths`` in ``yamen.yaml`` non-empty: every attach must
    match at least one allow glob, otherwise → ``human_required``.
-5. Extra ``sensitive_keywords`` from ``policy.yaml`` are appended to
+5. Extra ``sensitive_keywords`` from ``lvli.yaml`` are appended to
    the built-in list at evaluation time.
 
 **Soft tier** — the final layer when nothing harder fires:
 
-6. ``peers.yaml`` may pin ``policy_tier`` per peer. If absent, the
-   ``policy.yaml`` ``default_tier`` applies. The tier maps to an
+6. ``bangjiao.yaml`` may pin ``policy_tier`` per peer. If absent, the
+   ``lvli.yaml`` ``default_tier`` applies. The tier maps to an
    action: ``tier_a → human_required``, ``tier_b → judge``,
    ``tier_c → auto_pass``.
 
@@ -71,7 +71,7 @@ import yaml
 # Hardcoded layer
 # ---------------------------------------------------------------------------
 
-# Paths that no policy.yaml can re-allow. These are common locations for
+# Paths that no lvli.yaml can re-allow. These are common locations for
 # system secrets; if an inbound peer message attaches one of these we treat
 # it as a deliberate attempt to exfiltrate. Patterns are matched
 # case-insensitively against a normalized POSIX path with `..` segments
@@ -113,7 +113,7 @@ HARDCODED_DENY_PATHS: tuple[str, ...] = (
 
 # Substrings (case-insensitive) whose appearance in ``body`` forces a
 # human to look at the message. Not overridable from config; only
-# extendable via ``policy.yaml`` ``sensitive_keywords:``.
+# extendable via ``lvli.yaml`` ``sensitive_keywords:``.
 HARDCODED_KEYWORDS: tuple[str, ...] = (
     "api_key", "apikey", "api-key",
     "password", "passwd",
@@ -127,12 +127,12 @@ HARDCODED_KEYWORDS: tuple[str, ...] = (
 # Tier → action mapping. Unknown tier defaults to the safest action.
 _TIER_ACTION: dict[str, str] = {
     "tier_a": "human_required",
-    "tier_b": "judge",
+    "tier_b": "tuiguan",
     "tier_c": "auto_pass",
 }
 
 # Priority for "which tier is more permissive". Used by tier_grant logic
-# in :func:`evaluate` and by grants.load_effective_tier_grant.
+# in :func:`evaluate` and by lingpai.load_effective_tier_grant.
 _TIER_PRIORITY: dict[str, int] = {"tier_a": 0, "tier_b": 1, "tier_c": 2}
 
 
@@ -152,8 +152,8 @@ class Decision:
     tier: str                         # tier_a/b/c, or "hard_rule" when a hard layer fired
     reasons: list[str] = field(default_factory=list)
     # PR-4.1 — grant ids whose paths/tier matched during evaluation. The
-    # daemon iterates this list after evaluate() to call grants.record_hit
-    # (and grants.mark_consumed for consume_on_use tier grants).
+    # daemon iterates this list after evaluate() to call lingpai.record_hit
+    # (and lingpai.mark_consumed for consume_on_use tier grants).
     grant_hits: list[str] = field(default_factory=list)
 
 
@@ -162,7 +162,7 @@ class Decision:
 # ---------------------------------------------------------------------------
 
 def load_policy(project: str) -> PolicyConfig:
-    """Read ``$COURT_ROOT/projects/<p>/policy.yaml``.
+    """Read ``$YAMEN_ROOT/projects/<p>/lvli.yaml``.
 
     Missing file, empty file, or malformed yaml all collapse to defaults
     (``tier_b`` + no extra keywords) so a half-set-up project keeps
@@ -173,9 +173,9 @@ def load_policy(project: str) -> PolicyConfig:
     # Local import to keep policy.py importable in environments that don't
     # have peer_lib's full dependency graph available (e.g. tests that
     # exercise pure logic).
-    from peer_lib import project_dir
+    from bangjiao import project_dir
 
-    cfg_path = project_dir(project) / "policy.yaml"
+    cfg_path = project_dir(project) / "lvli.yaml"
     if not cfg_path.is_file():
         return PolicyConfig()
 
@@ -291,17 +291,17 @@ def evaluate(
         The verified inbound message. Reads ``body`` and ``attaches``.
         ``attaches`` is optional; missing → empty list.
     peer_tier : str or None
-        Per-peer tier override from ``peers.yaml``. None → use
+        Per-peer tier override from ``bangjiao.yaml``. None → use
         ``policy.default_tier``.
     policy : PolicyConfig
-        Loaded from ``policy.yaml``.
+        Loaded from ``lvli.yaml``.
     allow_paths, deny_paths : list[str]
-        User-configured globs from ``court.yaml`` ``federation:`` block.
+        User-configured globs from ``yamen.yaml`` ``bangjiao:`` block.
         HARDCODED_DENY_PATHS is checked in addition (not as a
         replacement).
     grant_paths : list[str] or None
         PR-4 legacy shape — flat list of path globs already-flattened
-        from active grants. When provided, hits do NOT show up in
+        from active lingpai. When provided, hits do NOT show up in
         ``decision.grant_hits``. Prefer ``path_grants`` for new callers.
     path_grants : list[Grant] or None
         PR-4.1 — structured list of active path grants for this peer.
@@ -363,7 +363,7 @@ def evaluate(
             reasons.append(f"attach '{path}' hits hardcoded deny '{hit}'")
             return Decision(action="denied", tier="hard_rule", reasons=reasons)
 
-    # 2. User deny paths from court.yaml.
+    # 2. User deny paths from yamen.yaml.
     for path in normalized:
         hit = _match_any(path, deny_paths)
         if hit:
@@ -389,7 +389,7 @@ def evaluate(
                 )
             # If the match came from a grant (not the static list) note
             # it in the audit trail AND register the grant's id for hit
-            # tracking so ``court-grant info`` shows usage.
+            # tracking so ``banling info`` shows usage.
             if hit in effective_grant_paths and hit not in allow_paths:
                 reasons.append(
                     f"attach '{path}' covered by active grant pattern '{hit}'"
@@ -444,13 +444,13 @@ def evaluate(
 # ---------------------------------------------------------------------------
 
 def _policy_log_path(project: str) -> Path:
-    from peer_lib import project_logs_dir
-    return project_logs_dir(project) / "policy-log.jsonl"
+    from bangjiao import project_logs_dir
+    return project_logs_dir(project) / "panduo.jsonl"
 
 
 def log_decision(project: str, msg: dict, decision: Decision) -> Path:
-    """Append one JSON line to ``logs/policy-log.jsonl``. Returns path."""
-    from peer_lib import iso_now, project_logs_dir
+    """Append one JSON line to ``logs/panduo.jsonl``. Returns path."""
+    from bangjiao import iso_now, project_logs_dir
 
     project_logs_dir(project).mkdir(parents=True, exist_ok=True)
     entry = {
@@ -477,7 +477,7 @@ def log_decision(project: str, msg: dict, decision: Decision) -> Path:
 # Where each action lands on disk, relative to bus/<from_court>/.
 ACTION_SUBDIR: dict[str, str] = {
     "auto_pass": "inbox",
-    "judge": "inbox",            # PR-2 stub passes through; PR-3 will refine
+    "tuiguan": "inbox",            # PR-2 stub passes through; PR-3 will refine
     "human_required": "pending-approval",
     "denied": "denied",
 }

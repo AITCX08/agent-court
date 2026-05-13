@@ -9,18 +9,18 @@ Tools:
 - ``list_projects()`` -- enumerate available courts and their roles.
 - ``dispatch_to_foreman(project, message, ...)`` -- write a markdown
   message into ``bus/upstream/outbox/`` for routing to the project's
-  foreman (or any other role).
+  zongguan (or any other role).
 - ``query_court_status(project, tail_lines=30)`` -- summarise event.log
   tail and per-role inbox depth + watcher health.
 - ``read_upstream_inbox(project, mark_done=False)`` -- collect replies
-  the project's foreman has written back to the upstream caller.
+  the project's zongguan has written back to the upstream caller.
 - ``list_peers(project=None)`` -- list known peer courts from
-  ``peers.yaml`` and probe reachability.
-- ``dispatch_to_peer(peer_court_id, project, message, ...)`` -- sign and
+  ``bangjiao.yaml`` and probe reachability.
+- ``dispatch_to_peer(peer_yamen_id, project, message, ...)`` -- sign and
   POST a message into a remote court's ``/inbox`` endpoint.
 
 Environment:
-- ``COURT_ROOT`` overrides the default home dir (``~/.agent-court``).
+- ``YAMEN_ROOT`` overrides the default home dir (``~/.agent-yamen``).
 """
 
 from __future__ import annotations
@@ -37,12 +37,12 @@ from typing import Optional
 import yaml
 from mcp.server.fastmcp import FastMCP
 
-import grants as _grants
-import peer_lib
+import lingpai
+import bangjiao
 
 
-COURT_ROOT = Path(os.environ.get("COURT_ROOT", str(Path.home() / ".agent-court")))
-PROJECTS_DIR = COURT_ROOT / "projects"
+YAMEN_ROOT = Path(os.environ.get("YAMEN_ROOT", str(Path.home() / ".agent-yamen")))
+PROJECTS_DIR = YAMEN_ROOT / "projects"
 UPSTREAM_ROLE = "upstream"
 
 
@@ -59,7 +59,7 @@ def _project_dir(project: str) -> Path:
 
 
 def _load_config(project: str) -> dict:
-    cfg = _project_dir(project) / "court.yaml"
+    cfg = _project_dir(project) / "yamen.yaml"
     if not cfg.is_file():
         raise ValueError(f"missing {cfg}")
     with cfg.open() as f:
@@ -83,15 +83,15 @@ mcp = FastMCP("agent-court")
 
 
 @mcp.tool()
-def list_projects() -> dict:
-    """List projects under ``$COURT_ROOT/projects/`` with their roles and tmux session names."""
+def lie_yamen() -> dict:
+    """List projects under ``$YAMEN_ROOT/projects/`` with their roles and tmux session names."""
     if not PROJECTS_DIR.exists():
         return {"projects": []}
     out = []
     for d in sorted(PROJECTS_DIR.iterdir()):
         if not d.is_dir():
             continue
-        cfg_path = d / "court.yaml"
+        cfg_path = d / "yamen.yaml"
         if not cfg_path.is_file():
             continue
         try:
@@ -110,11 +110,11 @@ def list_projects() -> dict:
 
 
 @mcp.tool()
-def dispatch_to_foreman(
+def chizhao_zongguan(
     project: str,
     message: str,
     reply_to: Optional[str] = None,
-    target_role: str = "foreman",
+    target_role: str = "zongguan",
 ) -> dict:
     """Dispatch a message into a project's bus from the upstream caller.
 
@@ -122,8 +122,8 @@ def dispatch_to_foreman(
         project: project name (see ``list_projects()``).
         message: markdown body of the message.
         reply_to: optional id of a previous message this one replies to.
-        target_role: defaults to ``foreman``. May be any role registered in
-            the project's ``court.yaml`` if you want to skip the foreman.
+        target_role: defaults to ``zongguan``. May be any role registered in
+            the project's ``yamen.yaml`` if you want to skip the zongguan.
 
     The message is written to ``bus/upstream/outbox/`` so the watcher routes
     it to ``bus/<target_role>/inbox/``. The watcher must be running for the
@@ -176,7 +176,7 @@ def dispatch_to_foreman(
 
 
 @mcp.tool()
-def query_court_status(project: str, tail_lines: int = 30) -> dict:
+def tang_yamen(project: str, tail_lines: int = 30) -> dict:
     """Snapshot a project's court: event.log tail + per-role inbox depth + watcher liveness."""
     proj_root = _project_dir(project)
     cfg = _load_config(project)
@@ -231,8 +231,8 @@ def query_court_status(project: str, tail_lines: int = 30) -> dict:
 
 
 @mcp.tool()
-def read_upstream_inbox(project: str, mark_done: bool = False) -> dict:
-    """Read messages addressed to the upstream caller (replies from foreman, etc.).
+def lan_chengzou(project: str, mark_done: bool = False) -> dict:
+    """Read messages addressed to the upstream caller (replies from zongguan, etc.).
 
     Args:
         project: project name.
@@ -304,31 +304,31 @@ def _parse_message(path: Path) -> dict:
 
 
 @mcp.tool()
-def list_peers(project: str) -> dict:
+def lie_fanbang(project: str) -> dict:
     """List peers registered for ``project``'s federation and probe each for reachability.
 
-    Peers are scoped per project (each project has its own ``peers.yaml`` and
+    Peers are scoped per project (each project has its own ``bangjiao.yaml`` and
     keypair). An upstream LLM caller picks which project's network they want
     to see before this tool returns anything useful.
 
     Args:
-        project: project name under ``$COURT_ROOT/projects/``.
+        project: project name under ``$YAMEN_ROOT/projects/``.
 
     Returns:
-        dict with ``self`` (this project's court_id + fingerprint + federation
+        dict with ``self`` (this project's yamen_id + fingerprint + federation
         enabled flag), ``peers`` (each peer's reachable status), and the path
-        to the loaded peers.yaml.
+        to the loaded bangjiao.yaml.
     """
-    if not peer_lib.project_dir(project).is_dir():
+    if not bangjiao.project_dir(project).is_dir():
         return {
             "error": "unknown_project",
             "project": project,
-            "available": peer_lib.all_projects(),
+            "available": bangjiao.all_projects(),
         }
 
-    fed = peer_lib.load_federation(project)
+    fed = bangjiao.load_bangjiao(project)
     try:
-        peers_cfg = peer_lib.load_peers(project)
+        peers_cfg = bangjiao.load_peers(project)
     except FileNotFoundError as e:
         return {"error": str(e), "project": project, "peers": []}
 
@@ -352,15 +352,15 @@ def list_peers(project: str) -> dict:
     return {
         "project": project,
         "self": {
-            "court_id": peers_cfg.self_court_id,
+            "yamen_id": peers_cfg.self_yamen_id,
             "fingerprint": peers_cfg.self_fingerprint,
-            "federation_enabled": fed.enabled,
+            "bangjiao_enabled": fed.enabled,
             "expose_roles": fed.expose_roles,
         },
         "peers": [
             {
                 "name": p.name,
-                "court_id": p.court_id,
+                "yamen_id": p.yamen_id,
                 "url": p.url,
                 "relation": p.relation,
                 "pub_key_fingerprint": p.pub_key_fingerprint,
@@ -368,16 +368,16 @@ def list_peers(project: str) -> dict:
             }
             for p, reach in zip(peers_cfg.peers, reachable)
         ],
-        "peers_yaml_path": str(peer_lib.project_peers_yaml_path(project)),
+        "peers_yaml_path": str(bangjiao.project_peers_yaml_path(project)),
     }
 
 
 @mcp.tool()
-def dispatch_to_peer(
+def guoshu_fanbang(
     project: str,
-    peer_court_id: str,
+    peer_yamen_id: str,
     message: str,
-    target_role: str = "foreman",
+    target_role: str = "zongguan",
     sender_role: str = "upstream",
     reply_to: Optional[str] = None,
     attaches: Optional[list] = None,
@@ -385,19 +385,19 @@ def dispatch_to_peer(
     """Sign and POST a message to a remote court's /inbox endpoint.
 
     Signed with the local ``project``'s keypair, so the remote side sees
-    ``from_court = <this project's court_id>``. The remote must have that
-    court_id in its own peers.yaml for the message to land.
+    ``from_court = <this project's yamen_id>``. The remote must have that
+    yamen_id in its own bangjiao.yaml for the message to land.
 
     Args:
         project: this side's project — picks which keypair signs the message
-            and which peers.yaml is consulted for ``peer_court_id``.
-        peer_court_id: the ``court_id`` of the target peer.
-        message: markdown body the remote foreman/role will read.
+            and which bangjiao.yaml is consulted for ``peer_yamen_id``.
+        peer_yamen_id: the ``yamen_id`` of the target peer.
+        message: markdown body the remote zongguan/role will read.
         target_role: the role inside the remote court that should receive
-            the message. Defaults to ``foreman``.
+            the message. Defaults to ``zongguan``.
         sender_role: the role name on *this* side that the remote sees as
             ``from``. Defaults to ``upstream`` (i.e. "an upstream LLM
-            assistant"); change to ``foreman`` etc. as appropriate.
+            assistant"); change to ``zongguan`` etc. as appropriate.
         reply_to: optional id of a previous message this one replies to.
         attaches: optional list of file paths this message references. The
             remote's policy engine (PR-2) inspects these against allow/deny
@@ -411,33 +411,33 @@ def dispatch_to_peer(
         On success the ``response`` field carries the policy decision
         (``decision``, ``tier``, ``reasons``) the remote applied.
     """
-    if not peer_lib.project_dir(project).is_dir():
+    if not bangjiao.project_dir(project).is_dir():
         return {
             "error": "unknown_project",
             "project": project,
-            "available": peer_lib.all_projects(),
+            "available": bangjiao.all_projects(),
         }
 
     try:
-        identity = peer_lib.load_identity(project)
+        identity = bangjiao.load_identity(project)
     except FileNotFoundError as e:
         return {"error": "no_identity", "detail": str(e), "project": project}
 
-    peers_cfg = peer_lib.load_peers(project)
-    peer = peers_cfg.by_court_id(peer_court_id)
+    peers_cfg = bangjiao.load_peers(project)
+    peer = peers_cfg.by_yamen_id(peer_yamen_id)
     if peer is None:
         return {
             "error": "unknown_peer",
             "project": project,
-            "peer_court_id": peer_court_id,
-            "available": [p.court_id for p in peers_cfg.peers],
+            "peer_yamen_id": peer_yamen_id,
+            "available": [p.yamen_id for p in peers_cfg.peers],
         }
 
     msg_id = secrets.token_hex(4)
-    ts = peer_lib.iso_now()
+    ts = bangjiao.iso_now()
     msg = {
         "from": sender_role,
-        "from_court": peers_cfg.self_court_id,
+        "from_court": peers_cfg.self_yamen_id,
         "to": target_role,
         "body": message,
         "ts": ts,
@@ -452,7 +452,7 @@ def dispatch_to_peer(
     if attaches:
         msg["attaches"] = list(attaches)
 
-    msg["signature"] = peer_lib.sign_message(msg, identity.priv)
+    msg["signature"] = bangjiao.sign_message(msg, identity.priv)
 
     import aiohttp
 
@@ -475,13 +475,13 @@ def dispatch_to_peer(
             "error": "transport_error",
             "detail": str(e),
             "project": project,
-            "peer_court_id": peer_court_id,
+            "peer_yamen_id": peer_yamen_id,
             "id": msg_id,
         }
 
     return {
         "project": project,
-        "peer_court_id": peer_court_id,
+        "peer_yamen_id": peer_yamen_id,
         "url": peer.url,
         "id": msg_id,
         "signature_status": "signed",
@@ -515,37 +515,37 @@ def _bad_project_reply(project: str) -> dict:
     return {
         "error": "unknown_project",
         "project": project,
-        "available": peer_lib.all_projects(),
+        "available": bangjiao.all_projects(),
     }
 
 
-def _check_peer_exists(project: str, peer_court_id: str) -> Optional[dict]:
-    """Return an MCP error dict if ``peer_court_id`` isn't in peers.yaml.
+def _check_peer_exists(project: str, peer_yamen_id: str) -> Optional[dict]:
+    """Return an MCP error dict if ``peer_yamen_id`` isn't in bangjiao.yaml.
 
     Returns None when the peer exists (so the caller can proceed) or
-    when peers.yaml is missing/empty (loose mode — let mint proceed so
+    when bangjiao.yaml is missing/empty (loose mode — let mint proceed so
     bootstrap-time grants still work).
     """
     try:
-        peers = peer_lib.load_peers(project)
+        peers = bangjiao.load_peers(project)
     except Exception:  # noqa: BLE001  — refuse to fail mint over loader hiccup
         return None
     if not peers.peers:
         return None
-    if peers.by_court_id(peer_court_id) is None:
+    if peers.by_yamen_id(peer_yamen_id) is None:
         return {
             "error": "unknown_peer",
             "project": project,
-            "peer_court_id": peer_court_id,
-            "available": [p.court_id for p in peers.peers],
+            "peer_yamen_id": peer_yamen_id,
+            "available": [p.yamen_id for p in peers.peers],
         }
     return None
 
 
 @mcp.tool()
-def grant_peer_access(
+def ban_luyin(
     project: str,
-    peer_court_id: str,
+    peer_yamen_id: str,
     paths: list,
     ttl: str = "30m",
     issued_by: str = "",
@@ -559,11 +559,11 @@ def grant_peer_access(
     Args:
         project: this side's project — the grant lives under this
             project's grants/ directory.
-        peer_court_id: the remote court's ``court_id`` (as it appears
-            in peers.yaml). The grant only applies to messages whose
+        peer_yamen_id: the remote court's ``yamen_id`` (as it appears
+            in bangjiao.yaml). The grant only applies to messages whose
             ``from_court`` matches this value.
         paths: list of path globs the peer may attach for the duration.
-            Same dialect as ``allow_paths`` in court.yaml.
+            Same dialect as ``allow_paths`` in yamen.yaml.
         ttl: how long the grant is valid. Accepts ``"30m"``, ``"1h"``,
             ``"2h30m"``, ``"1d"``, or a bare integer (seconds). Capped
             at 1 year.
@@ -573,16 +573,16 @@ def grant_peer_access(
         Dict with the grant fields on success, or an ``error`` dict on
         failure. Never raises.
     """
-    if not peer_lib.project_dir(project).is_dir():
+    if not bangjiao.project_dir(project).is_dir():
         return _bad_project_reply(project)
     if not isinstance(paths, list) or not paths:
         return {"error": "invalid_argument", "detail": "paths must be a non-empty list", "project": project}
-    bad_peer = _check_peer_exists(project, peer_court_id)
+    bad_peer = _check_peer_exists(project, peer_yamen_id)
     if bad_peer is not None:
         return bad_peer
     try:
-        grant = _grants.mint_path_grant(
-            project, peer_court_id, list(paths), ttl=ttl, issued_by=issued_by,
+        grant = lingpai.mint_path_grant(
+            project, peer_yamen_id, list(paths), ttl=ttl, issued_by=issued_by,
         )
     except ValueError as e:
         return {"error": "invalid_argument", "detail": str(e), "project": project}
@@ -592,9 +592,9 @@ def grant_peer_access(
 
 
 @mcp.tool()
-def grant_peer_tier(
+def sheng_pinji(
     project: str,
-    peer_court_id: str,
+    peer_yamen_id: str,
     target_tier: str,
     ttl: str = "30m",
     consume_on_use: bool = False,
@@ -608,7 +608,7 @@ def grant_peer_tier(
 
     Args:
         project: this side's project.
-        peer_court_id: peer's court_id as listed in peers.yaml.
+        peer_yamen_id: peer's yamen_id as listed in bangjiao.yaml.
         target_tier: one of ``"tier_a"`` / ``"tier_b"`` / ``"tier_c"``.
             Use ``"tier_c"`` to skip judge/human review for the
             duration.
@@ -623,15 +623,15 @@ def grant_peer_tier(
         Dict with the grant fields on success, or an ``error`` dict on
         failure.
     """
-    if not peer_lib.project_dir(project).is_dir():
+    if not bangjiao.project_dir(project).is_dir():
         return _bad_project_reply(project)
-    bad_peer = _check_peer_exists(project, peer_court_id)
+    bad_peer = _check_peer_exists(project, peer_yamen_id)
     if bad_peer is not None:
         return bad_peer
     try:
-        grant = _grants.mint_tier_grant(
+        grant = lingpai.mint_tier_grant(
             project,
-            peer_court_id,
+            peer_yamen_id,
             target_tier,
             ttl=ttl,
             consume_on_use=bool(consume_on_use),
@@ -645,7 +645,7 @@ def grant_peer_tier(
 
 
 @mcp.tool()
-def list_grants(project: str) -> dict:
+def lie_lingpai(project: str) -> dict:
     """Return every grant (active + expired) recorded for the project.
 
     Useful for "who has access right now?" status queries. The reply
@@ -654,10 +654,10 @@ def list_grants(project: str) -> dict:
     ``grant_type``, ``hit_count`` and ``remaining_seconds`` for quick
     triage.
     """
-    if not peer_lib.project_dir(project).is_dir():
+    if not bangjiao.project_dir(project).is_dir():
         return _bad_project_reply(project)
     try:
-        rows = _grants.list_grants(project)
+        rows = lingpai.list_grants(project)
     except ValueError as e:
         return {"error": "invalid_argument", "detail": str(e), "project": project}
     active: list[dict] = []
@@ -668,12 +668,12 @@ def list_grants(project: str) -> dict:
 
 
 @mcp.tool()
-def grant_info(project: str, grant_id: str) -> dict:
+def kan_lingpai(project: str, grant_id: str) -> dict:
     """Return one grant's full record, including hit_count + remaining time."""
-    if not peer_lib.project_dir(project).is_dir():
+    if not bangjiao.project_dir(project).is_dir():
         return _bad_project_reply(project)
     try:
-        g = _grants.find_grant(project, grant_id)
+        g = lingpai.find_grant(project, grant_id)
     except ValueError as e:
         return {"error": "invalid_argument", "detail": str(e), "project": project}
     if g is None:
@@ -686,13 +686,13 @@ def grant_info(project: str, grant_id: str) -> dict:
 
 
 @mcp.tool()
-def revoke_grant(project: str, grant_id: str) -> dict:
+def zhui_lingpai(project: str, grant_id: str) -> dict:
     """Delete a grant by id. Returns ``{"ok": true, "result": "revoked"}``
     on success, or an ``error`` dict naming the failure mode."""
-    if not peer_lib.project_dir(project).is_dir():
+    if not bangjiao.project_dir(project).is_dir():
         return _bad_project_reply(project)
     try:
-        result = _grants.revoke_grant(project, grant_id)
+        result = lingpai.revoke_grant(project, grant_id)
     except ValueError as e:
         return {"error": "invalid_argument", "detail": str(e), "project": project}
     if result == "revoked":

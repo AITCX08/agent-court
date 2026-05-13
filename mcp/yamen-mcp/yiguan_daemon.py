@@ -1,4 +1,4 @@
-"""agent-court — court-peer HTTP receiver daemon (per project).
+"""agent-yamen — court-peer HTTP receiver daemon (per project).
 
 Listens on the address configured by ``--bind`` / ``COURT_PEER_BIND``
 (default ``0.0.0.0:8765``).
@@ -6,14 +6,14 @@ Listens on the address configured by ``--bind`` / ``COURT_PEER_BIND``
 Endpoints:
 - ``GET  /healthz``  — liveness probe for ``list_peers.reachable``.
 - ``POST /inbox``    — accept a signed inter-court message and drop it into
-                       ``$COURT_ROOT/projects/<project>/bus/<from_court>/inbox/``.
+                       ``$YAMEN_ROOT/projects/<project>/bus/<from_court>/inbox/``.
 
 Per-project model:
 - The daemon is started with ``court-peer <project>``.
-- It reads ``court.yaml``'s ``federation:`` block. If ``enabled: false``
+- It reads ``yamen.yaml``'s ``bangjiao:`` block. If ``enabled: false``
   (the default), the daemon refuses to start — federation is off for
   that project.
-- It loads ``peers.yaml`` from the *same* project directory; peers
+- It loads ``bangjiao.yaml`` from the *same* project directory; peers
   registered there are the only ones permitted to POST.
 - It loads the project's own keypair (the public key is what other
   peers verify against; the daemon itself only uses the public key
@@ -31,17 +31,17 @@ import sys
 
 from aiohttp import web
 
-import grants
-import judge
-import policy
-from peer_lib import (
+import lingpai
+import tuiguan
+import lvli
+from bangjiao import (
     ReplayCache,
     UnsafeNameError,
     append_peer_error,
     assert_safe_path_component,
     court_root,
     iso_now,
-    load_federation,
+    load_bangjiao,
     load_identity,
     load_peers,
     project_court_yaml_path,
@@ -72,7 +72,7 @@ def _log(project: str, line: str) -> None:
 def make_app(project: str) -> web.Application:
     """Build the aiohttp app for a project. Caller is expected to have already
     validated that federation is enabled — but we re-check on each request so a
-    flipped flag in court.yaml takes effect without restart."""
+    flipped flag in yamen.yaml takes effect without restart."""
     app = web.Application()
     app["project"] = project
     # Per-app replay cache (in-memory, bounded). Combined with the ts
@@ -87,25 +87,25 @@ def make_app(project: str) -> web.Application:
 
 async def _healthz(request: web.Request) -> web.Response:
     project = request.app["project"]
-    fed = load_federation(project)
+    fed = load_bangjiao(project)
     return web.json_response({
         "status": "ok",
         "project": project,
-        "court_id": fed.court_id,
-        "federation_enabled": fed.enabled,
+        "yamen_id": fed.yamen_id,
+        "bangjiao_enabled": fed.enabled,
     })
 
 
 async def _inbox(request: web.Request) -> web.Response:
     project = request.app["project"]
 
-    # Re-check federation on every request so toggling the flag in court.yaml
+    # Re-check federation on every request so toggling the flag in yamen.yaml
     # takes effect without restart.
-    fed = load_federation(project)
+    fed = load_bangjiao(project)
     if not fed.enabled:
         append_peer_error(project, f"federation-disabled: rejecting inbound (project={project})")
         _log(project, "reject 403: federation disabled for this project")
-        return web.json_response({"error": "federation_disabled"}, status=403)
+        return web.json_response({"error": "bangjiao_disabled"}, status=403)
 
     try:
         msg = await request.json()
@@ -166,7 +166,7 @@ async def _inbox(request: web.Request) -> web.Response:
 
     # 403 — sender not registered as a peer of this project.
     peers_cfg = load_peers(project)
-    peer = peers_cfg.by_court_id(from_court)
+    peer = peers_cfg.by_yamen_id(from_court)
     if peer is None:
         append_peer_error(project, f"unknown-sender: from_court={from_court}")
         _log(project, f"reject 403: unknown sender '{from_court}'")
@@ -179,7 +179,7 @@ async def _inbox(request: web.Request) -> web.Response:
     pub_b64 = peer.pub_key_b64
     if not pub_b64:
         append_peer_error(
-            project, f"no-pubkey: peer '{from_court}' missing pub_key_b64 in peers.yaml"
+            project, f"no-pubkey: peer '{from_court}' missing pub_key_b64 in bangjiao.yaml"
         )
         _log(project, f"reject 401: no pub_key_b64 for peer '{from_court}'")
         return web.json_response(
@@ -231,7 +231,7 @@ async def _inbox(request: web.Request) -> web.Response:
         )
 
     # Validate path-component fields *before* we run the policy engine —
-    # if a peer picked a hostile court_id / id / from / to value the engine
+    # if a peer picked a hostile yamen_id / id / from / to value the engine
     # would happily decide on it and we'd still blow up at write time.
     try:
         for fld in ("from_court", "from", "to", "id"):
@@ -242,15 +242,15 @@ async def _inbox(request: web.Request) -> web.Response:
         return web.json_response({"error": "unsafe_name", "detail": str(e)}, status=400)
 
     # PR-2 policy layer — runs after signature + role whitelist pass.
-    # peer_tier comes from peers.yaml entry, falls back to policy.default_tier.
+    # peer_tier comes from bangjiao.yaml entry, falls back to policy.default_tier.
     # PR-4: load both path grants (widen allow_paths) and tier grants
     # (override peer_tier) for the inbound peer. Pass them structured so
     # the policy engine can attribute matches back to specific grant ids;
     # after evaluate we update those grants' hit_count / consumed_ts.
-    policy_cfg = policy.load_policy(project)
-    path_grants = grants.load_path_grants_for_peer(project, from_court)
-    tier_grant = grants.load_effective_tier_grant(project, from_court)
-    decision = policy.evaluate(
+    policy_cfg = lvli.load_policy(project)
+    path_grants = lingpai.load_path_grants_for_peer(project, from_court)
+    tier_grant = lingpai.load_effective_tier_grant(project, from_court)
+    decision = lvli.evaluate(
         msg,
         peer_tier=peer.policy_tier,
         policy=policy_cfg,
@@ -260,8 +260,8 @@ async def _inbox(request: web.Request) -> web.Response:
         tier_grant=tier_grant,
     )
 
-    # Record hits and consume one-shot tier grants. Best-effort: a
-    # failing rewrite logs to peer-errors.log but never blocks delivery.
+    # Record hits and consume one-shot tier lingpai. Best-effort: a
+    # failing rewrite logs to bangjiao-errors.log but never blocks delivery.
     if decision.grant_hits:
         consumable_ids = {
             tier_grant.id
@@ -269,23 +269,23 @@ async def _inbox(request: web.Request) -> web.Response:
             if tier_grant is not None and tier_grant.consume_on_use
         }
         for gid in decision.grant_hits:
-            grants.record_hit(project, gid)
+            lingpai.record_hit(project, gid)
             if gid in consumable_ids:
-                grants.mark_consumed(project, gid)
+                lingpai.mark_consumed(project, gid)
 
     # PR-3 — refine the `judge` tier via an LLM call. Anything else
     # (auto_pass / human_required / denied) is final and goes to disk now.
-    if decision.action == "judge":
-        decision = await judge.evaluate_with_llm(msg, project, decision)
+    if decision.action == "tuiguan":
+        decision = await tuiguan.evaluate_with_llm(msg, project, decision)
 
     # Audit log: never block delivery on a log-write failure.
     try:
-        policy.log_decision(project, msg, decision)
+        lvli.log_decision(project, msg, decision)
     except OSError as e:
         append_peer_error(project, f"policy-log-write-failed: {e}")
         _log(project, f"warn: policy-log write failed: {e}")
 
-    subdir = policy.subdir_for(decision.action)
+    subdir = lvli.subdir_for(decision.action)
     try:
         fpath = write_inbound_to_bus(
             project,
@@ -319,7 +319,7 @@ async def _inbox(request: web.Request) -> web.Response:
     # ``auto_pass`` or ``human_required`` before we get here, so no entry
     # for ``judge`` appears in this map. assert just in case the pipeline
     # ever forgets to refine.
-    assert decision.action != "judge", "judge action must be refined before reply"
+    assert decision.action != "tuiguan", "judge action must be refined before reply"
     status_map = {
         "auto_pass": "accepted",
         "human_required": "pending_approval",
@@ -337,7 +337,7 @@ async def _inbox(request: web.Request) -> web.Response:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="court-peer HTTP receiver daemon")
-    parser.add_argument("project", help="project name under $COURT_ROOT/projects/")
+    parser.add_argument("project", help="project name under $YAMEN_ROOT/projects/")
     parser.add_argument(
         "--bind",
         default=os.environ.get("COURT_PEER_BIND", "0.0.0.0:8765"),
@@ -348,27 +348,27 @@ def main() -> int:
     project = args.project
     if not project_dir(project).is_dir():
         print(
-            f"[court-peer] project '{project}' not found at {project_dir(project)}",
+            f"[tongzheng] project '{project}' not found at {project_dir(project)}",
             file=sys.stderr,
         )
         return 1
 
     if not project_court_yaml_path(project).is_file():
         print(
-            f"[court-peer] missing court.yaml at {project_court_yaml_path(project)}",
+            f"[tongzheng] missing yamen.yaml at {project_court_yaml_path(project)}",
             file=sys.stderr,
         )
         return 1
 
-    fed = load_federation(project)
+    fed = load_bangjiao(project)
     if not fed.enabled:
         print(
-            f"[court-peer] federation is disabled for project '{project}'.",
+            f"[tongzheng] federation is disabled for project '{project}'.",
             file=sys.stderr,
         )
         print(
-            f"[court-peer] enable it in {project_court_yaml_path(project)} under the "
-            f"`federation:` block (see projects/example/court.yaml for the schema).",
+            f"[tongzheng] enable it in {project_court_yaml_path(project)} under the "
+            f"`bangjiao:` block (see projects/example/yamen.yaml for the schema).",
             file=sys.stderr,
         )
         return 1
@@ -376,19 +376,19 @@ def main() -> int:
     try:
         identity = load_identity(project)
     except FileNotFoundError as e:
-        print(f"[court-peer] {e}", file=sys.stderr)
+        print(f"[tongzheng] {e}", file=sys.stderr)
         return 1
 
     host, _, port_s = args.bind.partition(":")
     if not port_s:
-        print(f"[court-peer] --bind must be host:port, got '{args.bind}'", file=sys.stderr)
+        print(f"[tongzheng] --bind must be host:port, got '{args.bind}'", file=sys.stderr)
         return 2
     port = int(port_s)
 
     app = make_app(project)
     _log(project, f"court-peer listening on {host}:{port}")
     _log(project, f"court_root={court_root()}")
-    _log(project, f"court_id={fed.court_id} fingerprint={identity.fingerprint}")
+    _log(project, f"yamen_id={fed.yamen_id} fingerprint={identity.fingerprint}")
     _log(
         project,
         f"expose_roles={fed.expose_roles}"

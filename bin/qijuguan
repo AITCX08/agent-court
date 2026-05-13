@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# agent-court — message bus watcher daemon for a single project.
+# agent-yamen — message bus 起居官 (watcher) for a single yamen.
 #
-# Watches: $COURT_ROOT/projects/<project>/bus/*/outbox/
+# Watches: $YAMEN_ROOT/projects/<project>/bus/*/outbox/
 # Routes:  outbox/<file>.md -> bus/<to>/inbox/<file>.md
 # Side-effects: appends shared/event.log, tmux send-keys notify into target window.
 #
-# Usually started by court-up; can be invoked standalone for testing.
+# Usually started by kaifu; can be invoked standalone for testing.
 set -uo pipefail
 
 PROJECT="${1:-}"
 if [ -z "$PROJECT" ]; then
-  echo "[court-watcher] usage: court-watcher <project>" >&2
+  echo "[qijuguan] usage: qijuguan <project>" >&2
   exit 1
 fi
 
-ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+ROOT="${YAMEN_ROOT:-$HOME/.agent-yamen}"
 PROJ_ROOT="$ROOT/projects/$PROJECT"
 BUS="$PROJ_ROOT/bus"
 EVENT_LOG="$PROJ_ROOT/shared/event.log"
-CFG="$PROJ_ROOT/court.yaml"
+CFG="$PROJ_ROOT/yamen.yaml"
 
-[ -f "$CFG" ] || { echo "[court-watcher] missing $CFG" >&2; exit 1; }
+[ -f "$CFG" ] || { echo "[qijuguan] missing $CFG" >&2; exit 1; }
 
 SESSION=$(yq -r '.session' "$CFG")
 

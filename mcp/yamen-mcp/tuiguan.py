@@ -1,6 +1,6 @@
-"""agent-court — LLM judge for PR-2's ``judge`` decision branch (PR-3).
+"""agent-yamen — LLM judge for PR-2's ``judge`` decision branch (PR-3).
 
-When the policy engine returns ``action="judge"`` the daemon calls
+When the policy engine returns ``action="tuiguan"`` the daemon calls
 :func:`evaluate_with_llm` here. We spawn the configured LLM CLI as a
 subprocess, feed it the message + policy reasons, and parse the JSON
 verdict it returns. The judge can only output one of two verdicts —
@@ -20,18 +20,18 @@ sees a few extra files that PR-2 alone would have auto-delivered.
 Configuration
 -------------
 
-Read from the project's ``court.yaml``:
+Read from the project's ``yamen.yaml``:
 
-- ``federation.judge.cli``       Override for which CLI binary to use.
+- ``bangjiao_block.tuiguan.cli``       Override for which CLI binary to use.
                                  Falls back to top-level ``default_cli``
                                  (which itself defaults to ``claude``).
-- ``federation.judge.model``     Optional ``--model`` argument passed
+- ``bangjiao_block.tuiguan.model``     Optional ``--model`` argument passed
                                  to the CLI. Omitted if unset.
-- ``federation.judge.prompt_file``  Override system-prompt path.
+- ``bangjiao_block.tuiguan.prompt_file``  Override system-prompt path.
                                  Falls back to the bundled
-                                 ``prompts/judge.md``.
-- ``federation.judge.timeout_seconds``  Default 30.
-- ``federation.judge.confidence_threshold``  Default 0.6. A verdict
+                                 ``prompts/tuiguan.md``.
+- ``bangjiao_block.tuiguan.timeout_seconds``  Default 30.
+- ``bangjiao_block.tuiguan.confidence_threshold``  Default 0.6. A verdict
                                  of ``auto_pass`` with a lower
                                  ``confidence`` is upgraded to
                                  ``human_required``.
@@ -45,11 +45,11 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from policy import Decision
+from lvli import Decision
 
 
 HERE = Path(__file__).resolve().parent
-BUILTIN_JUDGE_PROMPT = HERE / "prompts" / "judge.md"
+BUILTIN_JUDGE_PROMPT = HERE / "prompts" / "tuiguan.md"
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +244,8 @@ async def evaluate_with_llm(msg: dict, project: str, policy_decision: Decision) 
 
     Arguments:
         msg: the verified inbound peer message.
-        project: project name (for loading court.yaml).
-        policy_decision: the Decision returned by ``policy.evaluate``.
+        project: project name (for loading yamen.yaml).
+        policy_decision: the Decision returned by ``lvli.evaluate``.
             Its ``reasons`` are preserved and the LLM's verdict appended.
 
     Returns:
@@ -254,10 +254,10 @@ async def evaluate_with_llm(msg: dict, project: str, policy_decision: Decision) 
         - ``tier`` is ``"llm_judge"`` on a clean LLM verdict, or
           ``"llm_judge_failed"`` on any fallback path.
     """
-    from peer_lib import load_federation
+    from bangjiao import load_bangjiao
 
-    fed = load_federation(project)
-    j = fed.judge
+    fed = load_bangjiao(project)
+    j = fed.tuiguan
 
     cli_name = j.cli or fed.default_cli
     cli_path = shutil.which(cli_name) if cli_name else None

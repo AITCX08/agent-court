@@ -1,19 +1,19 @@
-"""agent-court — ``court-grant`` command-line entry point (PR-4).
+"""agent-yamen — ``banling`` command-line entry point (PR-4).
 
 Four subcommands:
 
 .. code-block:: shell
 
     # Path grant (widens allow_paths)
-    court-grant <project> <peer> <path> [<path>...] [--ttl 30m]
+    banling <project> <peer> <path> [<path>...] [--ttl 30m]
 
     # Tier grant (overrides peer's policy_tier)
-    court-grant <project> <peer> --tier tier_c [--ttl 1h | --once]
+    banling <project> <peer> --tier tier_c [--ttl 1h | --once]
 
     # Inspection
-    court-grant <project> list
-    court-grant <project> info <grant-id>
-    court-grant <project> revoke <grant-id>
+    banling <project> list
+    banling <project> info <grant-id>
+    banling <project> revoke <grant-id>
 
 The bare three-arg form ``<project> <peer> <path>`` is treated as
 ``add`` so daily use stays terse.
@@ -35,12 +35,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-import grants  # noqa: E402
-from peer_lib import project_dir  # noqa: E402
+import lingpai  # noqa: E402
+from bangjiao import project_dir  # noqa: E402
 
 
 # Subcommands we recognize when the user types
-# ``court-grant <project> <subcmd> ...``. Any other 2nd token is treated
+# ``banling <project> <subcmd> ...``. Any other 2nd token is treated
 # as a peer name (implicit ``add``).
 SUBCMDS: tuple[str, ...] = ("add", "list", "info", "revoke")
 
@@ -63,7 +63,7 @@ def _project_missing(project: str) -> bool:
 def _cmd_add(args) -> int:
     if _project_missing(args.project):
         print(
-            f"[court-grant] project '{args.project}' not found",
+            f"[banling] project '{args.project}' not found",
             file=sys.stderr,
         )
         return 1
@@ -72,7 +72,7 @@ def _cmd_add(args) -> int:
 
     try:
         if args.tier:
-            grant = grants.mint_tier_grant(
+            grant = lingpai.mint_tier_grant(
                 args.project,
                 args.peer,
                 args.tier,
@@ -83,18 +83,18 @@ def _cmd_add(args) -> int:
         else:
             if not args.paths:
                 print(
-                    "[court-grant] path grants require at least one path glob; "
+                    "[banling] path grants require at least one path glob; "
                     "to mint a tier grant pass --tier <tier_a|tier_b|tier_c>",
                     file=sys.stderr,
                 )
                 return 2
             if args.once:
                 print(
-                    "[court-grant] --once only applies to tier grants (use with --tier)",
+                    "[banling] --once only applies to tier grants (use with --tier)",
                     file=sys.stderr,
                 )
                 return 2
-            grant = grants.mint_path_grant(
+            grant = lingpai.mint_path_grant(
                 args.project,
                 args.peer,
                 args.paths,
@@ -102,10 +102,10 @@ def _cmd_add(args) -> int:
                 issued_by=issued_by,
             )
     except ValueError as e:
-        print(f"[court-grant] {e}", file=sys.stderr)
+        print(f"[banling] {e}", file=sys.stderr)
         return 2
     except OSError as e:
-        print(f"[court-grant] io error: {e}", file=sys.stderr)
+        print(f"[banling] io error: {e}", file=sys.stderr)
         return 3
 
     print(f"grant_type    : {grant.grant_type}")
@@ -119,22 +119,22 @@ def _cmd_add(args) -> int:
     print(f"issued_ts     : {grant.issued_ts}")
     print(f"expires_ts    : {grant.expires_ts}")
     print(f"issued_by     : {grant.issued_by}")
-    print(f"file          : {grants.grants_dir(args.project) / (grant.id + '.json')}")
+    print(f"file          : {lingpai.grants_dir(args.project) / (grant.id + '.json')}")
     return 0
 
 
 def _cmd_list(args) -> int:
     if _project_missing(args.project):
-        print(f"[court-grant] project '{args.project}' not found", file=sys.stderr)
+        print(f"[banling] project '{args.project}' not found", file=sys.stderr)
         return 1
     try:
-        rows = grants.list_grants(args.project)
+        rows = lingpai.list_grants(args.project)
     except ValueError as e:
-        print(f"[court-grant] {e}", file=sys.stderr)
+        print(f"[banling] {e}", file=sys.stderr)
         return 2
 
     if not rows:
-        print(f"[court-grant] no grants for project '{args.project}'")
+        print(f"[banling] no grants for project '{args.project}'")
         return 0
 
     print(
@@ -180,15 +180,15 @@ def _fmt_remaining(seconds: int) -> str:
 
 def _cmd_info(args) -> int:
     if _project_missing(args.project):
-        print(f"[court-grant] project '{args.project}' not found", file=sys.stderr)
+        print(f"[banling] project '{args.project}' not found", file=sys.stderr)
         return 1
     try:
-        g = grants.find_grant(args.project, args.grant_id)
+        g = lingpai.find_grant(args.project, args.grant_id)
     except ValueError as e:
-        print(f"[court-grant] {e}", file=sys.stderr)
+        print(f"[banling] {e}", file=sys.stderr)
         return 2
     if g is None:
-        print(f"[court-grant] no such grant: {args.grant_id}", file=sys.stderr)
+        print(f"[banling] no such grant: {args.grant_id}", file=sys.stderr)
         return 1
 
     if g.consumed_ts is not None:
@@ -216,37 +216,37 @@ def _cmd_info(args) -> int:
     print(f"hit_count     : {g.hit_count}")
     if g.last_hit_ts:
         print(f"last_hit_ts   : {g.last_hit_ts}")
-    print(f"file          : {grants.grants_dir(args.project) / (g.id + '.json')}")
+    print(f"file          : {lingpai.grants_dir(args.project) / (g.id + '.json')}")
     return 0
 
 
 def _cmd_revoke(args) -> int:
     if _project_missing(args.project):
-        print(f"[court-grant] project '{args.project}' not found", file=sys.stderr)
+        print(f"[banling] project '{args.project}' not found", file=sys.stderr)
         return 1
     try:
-        result = grants.revoke_grant(args.project, args.grant_id)
+        result = lingpai.revoke_grant(args.project, args.grant_id)
     except ValueError as e:
-        print(f"[court-grant] {e}", file=sys.stderr)
+        print(f"[banling] {e}", file=sys.stderr)
         return 2
     if result == "revoked":
-        print(f"[court-grant] revoked {args.grant_id}")
+        print(f"[banling] revoked {args.grant_id}")
         return 0
     if result == "invalid_id":
-        print(f"[court-grant] invalid grant id: {args.grant_id}", file=sys.stderr)
+        print(f"[banling] invalid grant id: {args.grant_id}", file=sys.stderr)
         return 2
     if result == "not_found":
-        print(f"[court-grant] no such grant: {args.grant_id}", file=sys.stderr)
+        print(f"[banling] no such grant: {args.grant_id}", file=sys.stderr)
         return 1
     # io_error
-    print(f"[court-grant] failed to delete {args.grant_id} (see logs/peer-errors.log)",
+    print(f"[banling] failed to delete {args.grant_id} (see logs/bangjiao-errors.log)",
           file=sys.stderr)
     return 3
 
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="court-grant",
+        prog="banling",
         description="Mint / list / inspect / revoke temporary grants for a federated peer.",
     )
     sub = p.add_subparsers(dest="cmd", required=False)
@@ -256,7 +256,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Mint a new grant (path grant by default; pass --tier for a tier grant).",
     )
     add.add_argument("project")
-    add.add_argument("peer", help="The peer's court_id, as it appears in peers.yaml.")
+    add.add_argument("peer", help="The peer's yamen_id, as it appears in bangjiao.yaml.")
     add.add_argument("paths", nargs="*",
                      help="One or more path globs (path grant). Omit when using --tier.")
     add.add_argument("--tier", default="",
@@ -291,14 +291,14 @@ def _reorder_argv(argv: list[str]) -> list[str]:
     """Rewrite the user's positional order into argparse's expected order.
 
     Documented use:
-        court-grant <project> <subcmd> ...
-        court-grant <project> <peer> <path>...     # implicit add
+        banling <project> <subcmd> ...
+        banling <project> <peer> <path>...     # implicit add
 
     argparse wants the subcommand first, so we shift things around.
 
     This function only touches *positional* arguments. Flags (anything
     starting with ``-``) are left in place, which means
-    ``court-grant --debug <project> list`` still works in the future if
+    ``banling --debug <project> list`` still works in the future if
     we add global flags (today there are none, but we don't want the
     re-orderer to be the reason new flags break).
     """

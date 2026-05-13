@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
-# agent-court — start a project's court.
+# agent-yamen — start a yamen.
 # Spawns: watcher daemon + tmux session with N LLM CLI windows (one per role).
 #
 # Usage:
-#   court-up <project>          # start project at $COURT_ROOT/projects/<project>
+#   kaifu <project>          # start project at $YAMEN_ROOT/projects/<project>
 #
 # Env:
-#   COURT_ROOT  — court home dir (default: ~/.agent-court)
+#   YAMEN_ROOT  — yamen home dir (default: ~/.agent-yamen)
 set -e
 
 PROJECT="${1:-}"
 if [ -z "$PROJECT" ]; then
-  echo "[court-up] usage: court-up <project>" >&2
+  echo "[kaifu] usage: kaifu <project>" >&2
   echo "available projects:" >&2
-  ls -1 "${COURT_ROOT:-$HOME/.agent-court}/projects" 2>/dev/null | sed 's/^/  /' >&2
+  ls -1 "${YAMEN_ROOT:-$HOME/.agent-yamen}/projects" 2>/dev/null | sed 's/^/  /' >&2
   exit 1
 fi
 
-ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+ROOT="${YAMEN_ROOT:-$HOME/.agent-yamen}"
 PROJ_ROOT="$ROOT/projects/$PROJECT"
-CFG="$PROJ_ROOT/court.yaml"
+CFG="$PROJ_ROOT/yamen.yaml"
 BIN="$(cd "$(dirname "$0")" && pwd)"
 LOGS="$PROJ_ROOT/logs"
 
-[ -f "$CFG" ] || { echo "[court-up] missing $CFG (project '$PROJECT' not found)" >&2; exit 1; }
+[ -f "$CFG" ] || { echo "[kaifu] missing $CFG (project '$PROJECT' not found)" >&2; exit 1; }
 
 SESSION=$(yq -r '.session' "$CFG")
 ATTACH=$(yq -r '.attach_window' "$CFG")
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
-  echo "[court-up:$PROJECT] session '$SESSION' already exists, attaching"
+  echo "[kaifu:$PROJECT] session '$SESSION' already exists, attaching"
   tmux attach -t "$SESSION"
   exit 0
 fi
@@ -38,28 +38,28 @@ mkdir -p "$LOGS"
 
 WATCHER_PID_FILE="$LOGS/watcher.pid"
 if [ -f "$WATCHER_PID_FILE" ] && kill -0 "$(cat "$WATCHER_PID_FILE")" 2>/dev/null; then
-  echo "[court-up:$PROJECT] watcher already running (pid $(cat "$WATCHER_PID_FILE"))"
+  echo "[kaifu:$PROJECT] watcher already running (pid $(cat "$WATCHER_PID_FILE"))"
 else
-  nohup "$BIN/court-watcher" "$PROJECT" >>"$LOGS/watcher.log" 2>&1 &
+  nohup "$BIN/qijuguan" "$PROJECT" >>"$LOGS/watcher.log" 2>&1 &
   echo $! >"$WATCHER_PID_FILE"
-  echo "[court-up:$PROJECT] watcher started (pid $(cat "$WATCHER_PID_FILE"), log $LOGS/watcher.log)"
+  echo "[kaifu:$PROJECT] watcher started (pid $(cat "$WATCHER_PID_FILE"), log $LOGS/watcher.log)"
 fi
 
 ROLES_COUNT=$(yq -r '.roles | length' "$CFG")
 if [ "$ROLES_COUNT" -eq 0 ]; then
-  echo "[court-up:$PROJECT] no roles in court.yaml" >&2
+  echo "[kaifu:$PROJECT] no roles in yamen.yaml" >&2
   kill "$(cat "$WATCHER_PID_FILE")" 2>/dev/null || true
   exit 1
 fi
 
 FIRST_ROLE=$(yq -r '.roles[0].name' "$CFG")
 tmux new-session -d -s "$SESSION" -n "$FIRST_ROLE"
-tmux send-keys -t "$SESSION:$FIRST_ROLE" "$BIN/role-launch $PROJECT $FIRST_ROLE" Enter
+tmux send-keys -t "$SESSION:$FIRST_ROLE" "$BIN/shengtang $PROJECT $FIRST_ROLE" Enter
 
 for i in $(seq 1 $((ROLES_COUNT - 1))); do
   NAME=$(yq -r ".roles[$i].name" "$CFG")
   tmux new-window -t "$SESSION" -n "$NAME"
-  tmux send-keys -t "$SESSION:$NAME" "$BIN/role-launch $PROJECT $NAME" Enter
+  tmux send-keys -t "$SESSION:$NAME" "$BIN/shengtang $PROJECT $NAME" Enter
 done
 
 UTIL_COUNT=$(yq -r '.utility_windows | length' "$CFG" 2>/dev/null || echo 0)
@@ -72,7 +72,7 @@ done
 
 tmux select-window -t "$SESSION:$ATTACH" 2>/dev/null || true
 
-echo "[court-up:$PROJECT] session '$SESSION' ready"
+echo "[kaifu:$PROJECT] session '$SESSION' ready"
 echo "  roles:   $(yq -r '.roles[].name' "$CFG" | tr '\n' ' ')"
 echo "  utility: $(yq -r '.utility_windows[].name' "$CFG" 2>/dev/null | tr '\n' ' ')"
 echo

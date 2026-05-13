@@ -1,6 +1,6 @@
-# agent-court policy engine configuration — example
+# agent-yamen policy engine configuration — example
 #
-# Real file lives at $COURT_ROOT/projects/<project>/policy.yaml.
+# Real file lives at $YAMEN_ROOT/projects/<project>/lvli.yaml.
 # Missing file = defaults (default_tier: tier_b, no extra keywords).
 #
 # Three tiers map to actions taken when an inbound peer message arrives
@@ -16,27 +16,27 @@
 #                             an llm_judge call.
 #
 #   tier_c → auto_pass        drop straight into bus/<peer>/inbox/.
-#                             Trust the peer; let foreman handle it.
+#                             Trust the peer; let zongguan handle it.
 #
-# Per-peer override: in peers.yaml, you can pin `policy_tier: tier_a`
+# Per-peer override: in bangjiao.yaml, you can pin `policy_tier: tier_a`
 # on a specific peer entry; that overrides default_tier for just that
 # peer.
 #
 # HARD RULES — written in code, NOT overridable here:
 #   * Paths matching **/.ssh/**, **/.env, **/id_rsa*, /etc/**,
 #     **/credentials.json, **/secrets/**, **/.aws/**, **/.kube/config
-#     → denied (filed under bus/<peer>/denied/, never reaches foreman)
+#     → denied (filed under bus/<peer>/denied/, never reaches zongguan)
 #   * Body containing api_key, password, secret, token, sk-, AKIA, etc.
 #     → forced to human_required regardless of tier
-#   * deny_paths / allow_paths from court.yaml are also enforced here:
+#   * deny_paths / allow_paths from yamen.yaml are also enforced here:
 #     deny match → denied; allow_paths non-empty + attach not covered
 #     → forced to human_required
 #
 # Audit: every decision is appended to logs/policy-log.jsonl with the
 # action, tier, and a list of reasons. Tail it to see what's happening:
-#   tail -f $COURT_ROOT/projects/<project>/logs/policy-log.jsonl
+#   tail -f $YAMEN_ROOT/projects/<project>/logs/policy-log.jsonl
 
-# Default tier when peers.yaml doesn't pin one for the sender.
+# Default tier when bangjiao.yaml doesn't pin one for the sender.
 # Conservative: tier_b means new peers go through judge by default.
 default_tier: tier_b
 
