@@ -26,10 +26,8 @@ import shutil
 
 async def send(item, shenpi_cfg) -> None:
     cfg = shenpi_cfg.wechat
-    if not cfg.cc_connect_project or not cfg.cc_connect_session_key:
-        raise ValueError(
-            "wechat channel requires cc_connect_project + cc_connect_session_key"
-        )
+    if not cfg.cc_connect_project:
+        raise ValueError("wechat channel requires cc_connect_project")
 
     binary = shutil.which(cfg.cc_connect_bin)
     if binary is None:
@@ -38,14 +36,17 @@ async def send(item, shenpi_cfg) -> None:
         )
 
     text = _format_text(item)
-    env = {
-        **os.environ,
-        "CC_PROJECT": cfg.cc_connect_project,
-        "CC_SESSION_KEY": cfg.cc_connect_session_key,
-    }
+    env = {**os.environ, "CC_PROJECT": cfg.cc_connect_project}
+    # session_key is optional — when unset, cc-connect "picks the first
+    # active session" for the project, which is the common single-chat case.
+    args = [binary, "send", "--project", cfg.cc_connect_project,
+            "--message", text]
+    if cfg.cc_connect_session_key:
+        env["CC_SESSION_KEY"] = cfg.cc_connect_session_key
+        args += ["--session", cfg.cc_connect_session_key]
 
     proc = await asyncio.create_subprocess_exec(
-        binary, "send", "--message", text,
+        *args,
         env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
