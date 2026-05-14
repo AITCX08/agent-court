@@ -352,6 +352,9 @@ class FeishuChannelConfig:
     # API turns ``@<open-id>`` into a real mention when the bot is in the
     # same chat as the recipient; harmless when it isn't.
     mention: list[str] = field(default_factory=list)
+    # PR-6 — per-channel override of approvals.max_retries. None falls
+    # back to the global default.
+    max_retries: Optional[int] = None
 
 
 @dataclass
@@ -367,6 +370,8 @@ class WechatChannelConfig:
     cc_connect_bin: str = "cc-connect"          # binary on PATH
     cc_connect_project: Optional[str] = None    # CC_PROJECT
     cc_connect_session_key: Optional[str] = None  # CC_SESSION_KEY
+    # PR-6 — per-channel override of approvals.max_retries.
+    max_retries: Optional[int] = None
 
 
 @dataclass
@@ -376,10 +381,30 @@ class ShenpiConfig:
     Default disabled; turning it on adds one extra step per inbound
     ``human_required`` decision (fire-and-forget notify dispatch to each
     enabled channel).
+
+    PR-6 added the ``delivery_policy`` + retry knobs:
+
+    - ``delivery_policy = "broadcast"`` (default): fire every enabled
+      channel concurrently. Each channel retries independently on
+      transient failure. Useful when you actively *want* to get
+      pinged on multiple devices.
+    - ``delivery_policy = "escalate"``: walk ``channels`` in order;
+      stop on the first channel that delivers successfully. Each
+      channel exhausts its retries before we fall through to the next.
+      Useful when the channels are ranked by preference (e.g. Feishu
+      first, fallback to WeChat if Feishu's webhook is down).
+
+    ``max_retries`` (default 0 = no retry, same as PR-5) and
+    ``backoff_seconds`` (initial delay; doubles each retry attempt,
+    exponential) shape the per-channel retry loop. A channel may
+    override ``max_retries`` in its own block.
     """
     enabled: bool = False
     channels: list[str] = field(default_factory=list)   # subset of {terminal, feishu, wechat}
     timeout_seconds: int = 0                            # 0 = no timeout
+    delivery_policy: str = "broadcast"                  # "broadcast" | "escalate"
+    max_retries: int = 0                                # global default
+    backoff_seconds: float = 3.0                        # initial backoff, doubles each retry
     feishu: FeishuChannelConfig = field(default_factory=FeishuChannelConfig)
     wechat: WechatChannelConfig = field(default_factory=WechatChannelConfig)
 
@@ -452,6 +477,19 @@ def load_bangjiao(project: str) -> BangjiaoConfig:
 _VALID_SHENPI_CHANNELS = ("terminal", "feishu", "wechat")
 
 
+def _clamp_optional_retries(raw) -> Optional[int]:
+    """Per-channel ``max_retries`` override accepts ``None`` (= use the
+    global default), ``int >= 0``, or anything malformed (clamped to None
+    so the global default takes over)."""
+    if raw is None:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(n, 0)
+
+
 def _parse_shenpi_config(block: dict) -> ShenpiConfig:
     """Build a ShenpiConfig from the raw YAML dict, clamping invalid values
     to safe defaults so a misconfigured ``shenpi:`` block can't silently
@@ -480,10 +518,34 @@ def _parse_shenpi_config(block: dict) -> ShenpiConfig:
     if timeout < 0:
         timeout = 0
 
+    # PR-6 — delivery policy. Anything other than "escalate" collapses to
+    # "broadcast" so a typo still preserves the PR-5 behaviour (fan-out).
+    raw_policy = str(block.get("delivery_policy") or "broadcast").lower()
+    delivery_policy = "escalate" if raw_policy == "escalate" else "broadcast"
+
+    # PR-6 — global retry knobs. Clamp out negatives + NaN so the retry
+    # loop can't run forever.
+    raw_retries = block.get("max_retries", 0)
+    try:
+        max_retries = int(raw_retries)
+    except (TypeError, ValueError):
+        max_retries = 0
+    if max_retries < 0:
+        max_retries = 0
+
+    raw_backoff = block.get("backoff_seconds", 3.0)
+    try:
+        backoff = float(raw_backoff)
+    except (TypeError, ValueError):
+        backoff = 3.0
+    if not math.isfinite(backoff) or backoff < 0:
+        backoff = 3.0
+
     feishu_block = block.get("feishu") or {}
     feishu = FeishuChannelConfig(
         webhook_url=feishu_block.get("webhook_url") or None,
         mention=[str(m) for m in (feishu_block.get("mention") or [])],
+        max_retries=_clamp_optional_retries(feishu_block.get("max_retries")),
     )
 
     wechat_block = block.get("wechat") or {}
@@ -497,12 +559,16 @@ def _parse_shenpi_config(block: dict) -> ShenpiConfig:
             str(wechat_block["cc_connect_session_key"])
             if wechat_block.get("cc_connect_session_key") else None
         ),
+        max_retries=_clamp_optional_retries(wechat_block.get("max_retries")),
     )
 
     return ShenpiConfig(
         enabled=enabled,
         channels=channels,
         timeout_seconds=timeout,
+        delivery_policy=delivery_policy,
+        max_retries=max_retries,
+        backoff_seconds=backoff,
         feishu=feishu,
         wechat=wechat,
     )

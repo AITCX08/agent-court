@@ -384,14 +384,28 @@ federation:
     enabled: true
     channels: [terminal, feishu, wechat]
     timeout_seconds: 0      # 0 = 永不超时；>0 表示秒数，过期后 court-approve cleanup 会自动 deny
+
+    # PR-6 — 投递策略 + 重试
+    delivery_policy: broadcast   # 'broadcast' (默认, 三通道一起叮) | 'escalate' (按序, 首个成功停)
+    max_retries: 0               # 全局默认: 单通道失败重试几次 (0 = 不重试, 同 PR-5 老行为)
+    backoff_seconds: 3.0         # 失败后等多久再重试; 每次翻倍 (3 → 6 → 12 → …)
+
     feishu:
       webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/..."
       mention: ["ou_xxx"]   # @ 谁，open_id 列表
+      max_retries: 5        # PR-6 - 单通道覆盖全局 max_retries
     wechat:
       cc_connect_bin: "cc-connect"      # 默认就是 cc-connect，可指自定义路径
       cc_connect_project: "k2work"      # 推到哪个 cc-connect project
       cc_connect_session_key: "..."     # 哪个会话
 ```
+
+**两种 `delivery_policy`**：
+
+| 策略 | 行为 | 适合 |
+|---|---|---|
+| `broadcast` (默认) | 所有通道**并发**触发，各自独立重试 | 你**就是**想被多个 IM 同时叮 |
+| `escalate` | 按 `channels` 顺序触发，**首个成功即停**；每通道用尽自己的 retry 才回退 | 三通道按优先级排（如 飞书 > 微信 > 终端），任一通了就别再骚扰其他 |
 
 **审批动作**统一走 `court-approve` —— 不管你坐在终端、飞书还是微信，最后都是
 让某个进程调这个动作。CLI 和 MCP tool 同形：
@@ -513,5 +527,9 @@ PR-4（sudo 风格临时授权 —— peer 绑定、时效绑定的授权，
 针对路径穿越、原子写、严格 JSON 校验都做了加固）、
 PR-5（留中审批 —— 终端 / 飞书 / 微信 三通道通知 + `court-approve`
 CLI/MCP 统一审批动作 + 可配超时；通知 fire-and-forget 不阻塞
-HTTP；微信侧通过 cc-connect 桥闭环）已经在跑，带 190+ 测试。
-PR-6（IM 冗余）排在后面。欢迎报 bug 或提新 role 范式 —— 开 issue。
+HTTP；微信侧通过 cc-connect 桥闭环）、
+PR-6（IM 冗余 —— `delivery_policy: broadcast | escalate` 让通道
+按并发或按序投递；`max_retries` + `backoff_seconds` 指数退避；
+单通道可覆盖全局 retry；审计日志细分 `notified` /
+`notify_attempt_failed` / `notify_failed` 让失败原因可追溯）
+已经在跑，带 200+ 测试。欢迎报 bug 或提新 role 范式 —— 开 issue。

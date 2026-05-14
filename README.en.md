@@ -395,14 +395,28 @@ federation:
     enabled: true
     channels: [terminal, feishu, wechat]
     timeout_seconds: 0     # 0 = never expire; >0 → court-approve cleanup auto-denies past this age
+
+    # PR-6 — delivery policy + retry
+    delivery_policy: broadcast   # 'broadcast' (default, fan-out) | 'escalate' (sequential, stop on first success)
+    max_retries: 0               # global default for transient-failure retries (0 = same as PR-5: fire once)
+    backoff_seconds: 3.0         # initial delay between retries; doubles each attempt (3 → 6 → 12 → …)
+
     feishu:
       webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/..."
       mention: ["ou_xxx"]   # open_ids to @ in the message body
+      max_retries: 5        # PR-6 — per-channel override of the global default
     wechat:
       cc_connect_bin: "cc-connect"        # binary on PATH; override for custom installs
       cc_connect_project: "k2work"        # which cc-connect project to push to
       cc_connect_session_key: "..."       # which conversation
 ```
+
+**Two delivery policies** (PR-6):
+
+| Policy | Behaviour | When to use |
+|---|---|---|
+| `broadcast` (default) | All channels fire **concurrently**, each with its own independent retry budget. | You *want* every device to ping. |
+| `escalate` | Channels fire **in order**; the first one that successfully delivers wins and the rest are skipped. Each channel exhausts its retry budget before falling through to the next. | The channels are ranked by preference (Feishu first, fall back to WeChat if Feishu's webhook is down). |
 
 **Approval action** is unified through `court-approve` — same surface from
 terminal, Feishu reply, or WeChat reply:
@@ -526,10 +540,16 @@ branch, with fail-safe fallback to human_required), PR-4
 that widen `allow_paths` (path grants) or override the soft tier
 (tier grants, with optional `--once` semantics), via `court-grant`
 + MCP; hardened against path traversal, atomic writes, strict
-JSON validation), and PR-5 (留中/pending-approval review —
+JSON validation), PR-5 (留中/pending-approval review —
 terminal / FeiShu / WeChat notification channels + unified
 `court-approve` CLI/MCP approval action + configurable timeout-sweep;
 notification is fire-and-forget and never blocks HTTP; the
-WeChat side loops through cc-connect, no extra gateway needed)
-are working with 190+ tests. PR-6 (IM redundancy) is next.
+WeChat side loops through cc-connect, no extra gateway needed),
+and PR-6 (IM redundancy — `delivery_policy: broadcast | escalate`
+governs whether channels fire concurrently or sequentially with
+stop-on-success; `max_retries` + `backoff_seconds` exponential
+retry per channel; per-channel `max_retries` overrides; audit log
+splits `notified` / `notify_attempt_failed` / `notify_failed` so
+transient blips and terminal failures are distinguishable)
+are working with 200+ tests.
 Bug reports and prompts for new role archetypes welcome — open an issue.

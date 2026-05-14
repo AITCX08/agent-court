@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import re
+import asyncio
 import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -390,33 +391,120 @@ def sweep_expired(project: str, *, timeout_seconds: int,
 # ---------------------------------------------------------------------------
 
 
-async def notify(item: PendingItem, *, shenpi_cfg) -> dict:
-    """Fan out a notification across every enabled channel.
+def _channel_max_retries(name: str, shenpi_cfg) -> int:
+    """Resolve the effective retry budget for one channel.
 
-    Each channel runs in best-effort mode — a failure on one is recorded
-    in the audit log and does NOT prevent the others from firing. The
-    return dict reports per-channel ``ok | error``.
+    Per-channel overrides win; ``None`` falls through to the global
+    ``shenpi_cfg.max_retries``. Negative values are clamped to 0.
+    """
+    block = getattr(shenpi_cfg, name, None)
+    per = getattr(block, "max_retries", None) if block is not None else None
+    raw = per if per is not None else shenpi_cfg.max_retries
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _try_channel_with_retry(name: str, item: PendingItem,
+                                  shenpi_cfg) -> str:
+    """Fire one channel; retry on exception with exponential backoff.
+
+    Returns ``"ok"`` on first successful delivery, ``"unknown_channel"``
+    if the name isn't registered, or ``f"error: <last-exception>"``
+    when all retries are exhausted. Each individual attempt (success or
+    failure) gets one line in ``approval-log.jsonl`` as a
+    ``"notified"`` / ``"notify_attempt_failed"`` event. After
+    exhausting retries we add one ``"notify_failed"`` summary line so a
+    reader can scan for terminal failures without reading every attempt.
+
+    Backoff between failed attempts:
+    ``shenpi_cfg.backoff_seconds * 2**attempt``.
+    """
+    sender = _CHANNEL_TABLE.get(name)
+    if sender is None:
+        _audit(item.project, action="notify_failed", item=item, by="system",
+               extra={"channel": name, "error": "unknown_channel"})
+        return "unknown_channel"
+
+    max_retries = _channel_max_retries(name, shenpi_cfg)
+    backoff = max(float(shenpi_cfg.backoff_seconds), 0.0)
+    last_error: Optional[str] = None
+    total_attempts = max_retries + 1
+
+    for attempt in range(total_attempts):
+        try:
+            await sender(item, shenpi_cfg)
+            _audit(item.project, action="notified", item=item, by="system",
+                   extra={"channel": name, "attempt": attempt + 1})
+            return "ok"
+        except Exception as e:  # noqa: BLE001
+            last_error = str(e)
+            _audit(item.project, action="notify_attempt_failed", item=item,
+                   by="system",
+                   extra={"channel": name, "attempt": attempt + 1,
+                          "error": last_error})
+            if attempt < total_attempts - 1:
+                # Exponential backoff. ``await``-able so the event loop
+                # stays free.
+                await asyncio.sleep(backoff * (2 ** attempt))
+
+    _audit(item.project, action="notify_failed", item=item, by="system",
+           extra={"channel": name, "attempts": total_attempts,
+                  "error": last_error})
+    return f"error: {last_error}"
+
+
+async def notify(item: PendingItem, *, shenpi_cfg) -> dict:
+    """Dispatch a notification through the configured channels.
+
+    PR-6 added two delivery policies on top of the PR-5 fan-out:
+
+    - ``broadcast`` (default): fire every channel concurrently. Each
+      channel retries independently on transient failure. Useful when
+      you actively *want* to get pinged on multiple devices.
+    - ``escalate``: walk ``channels`` in order; stop on the first
+      channel that delivers successfully. Each channel exhausts its
+      retry budget before we fall through to the next. Useful when
+      the channel list is ranked by preference (e.g. Feishu first,
+      fall back to WeChat if Feishu's webhook is down).
+
+    Returns a dict mapping channel name → result, where result is
+    ``"ok"`` / ``"unknown_channel"`` / ``f"error: <msg>"``. When the
+    policy is ``escalate`` and a later channel was skipped (because an
+    earlier one succeeded), that channel does NOT appear in the
+    return dict.
 
     Caller (the daemon) should treat this as fire-and-forget; do NOT
     await its result inside a request handler — schedule it on the
     event loop instead.
     """
-    out: dict[str, str] = {}
-    for name in shenpi_cfg.channels:
-        try:
-            sender = _CHANNEL_TABLE.get(name)
-            if sender is None:
-                out[name] = "unknown_channel"
-                continue
-            await sender(item, shenpi_cfg)
-            out[name] = "ok"
-            _audit(item.project, action="notified", item=item,
-                   by="system", extra={"channel": name})
-        except Exception as e:  # noqa: BLE001 — channel failures must NOT crash daemon
-            out[name] = f"error: {e}"
-            _audit(item.project, action="notify_failed", item=item,
-                   by="system", extra={"channel": name, "error": str(e)})
-    return out
+    policy = getattr(shenpi_cfg, "delivery_policy", "broadcast")
+
+    if policy == "escalate":
+        out: dict[str, str] = {}
+        for name in shenpi_cfg.channels:
+            result = await _try_channel_with_retry(name, item, shenpi_cfg)
+            out[name] = result
+            if result == "ok":
+                break
+        return out
+
+    # broadcast: fire all in parallel; each channel's retry budget runs
+    # independently. We collect results in stable channel order so the
+    # caller's mental model matches the config list.
+    tasks = [
+        asyncio.create_task(_try_channel_with_retry(name, item, shenpi_cfg))
+        for name in shenpi_cfg.channels
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    out_b: dict[str, str] = {}
+    for name, r in zip(shenpi_cfg.channels, results):
+        if isinstance(r, Exception):
+            out_b[name] = f"error: {r}"
+        else:
+            out_b[name] = r
+    return out_b
 
 
 # Populated by the channels package at import time so we can keep imports

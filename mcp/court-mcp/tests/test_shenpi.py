@@ -430,6 +430,247 @@ def test_one_channel_failure_does_not_stop_others(root_dir):
 
 
 # ---------------------------------------------------------------------------
+# PR-6 — delivery policies + retry
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fast_backoff(monkeypatch):
+    """asyncio.sleep is mocked to no-op so retry tests don't actually wait."""
+    async def _noop(_):
+        return None
+    monkeypatch.setattr(asyncio, "sleep", _noop)
+
+
+def _fake_channel(name: str, *, fail_first_n: int = 0):
+    """Return a (sender, calls) tuple. The sender raises ``RuntimeError``
+    on its first ``fail_first_n`` invocations, then succeeds. ``calls``
+    is a list that records every invocation for assertions."""
+    calls: list[int] = []
+    async def _sender(item, shenpi_cfg):
+        calls.append(len(calls) + 1)
+        if len(calls) <= fail_first_n:
+            raise RuntimeError(f"{name} attempt {len(calls)} forced-fail")
+    return _sender, calls
+
+
+def _patch_channels(monkeypatch, mapping):
+    """Replace ``shenpi._CHANNEL_TABLE`` for the duration of a test."""
+    monkeypatch.setattr(shenpi, "_CHANNEL_TABLE", dict(mapping))
+
+
+# --- config parsing -------------------------------------------------------
+
+
+def test_shenpi_config_parses_delivery_policy_and_retry(root_dir):
+    _seed(root_dir, "p", shenpi_block={
+        "enabled": True,
+        "channels": ["feishu", "terminal"],
+        "delivery_policy": "escalate",
+        "max_retries": 4,
+        "backoff_seconds": 1.5,
+        "feishu": {"webhook_url": "x", "max_retries": 9},
+    })
+    cfg = bangjiao.load_bangjiao("p").shenpi
+    assert cfg.delivery_policy == "escalate"
+    assert cfg.max_retries == 4
+    assert cfg.backoff_seconds == 1.5
+    assert cfg.feishu.max_retries == 9
+
+
+def test_shenpi_config_clamps_bad_delivery_policy(root_dir):
+    _seed(root_dir, "p", shenpi_block={
+        "enabled": True, "delivery_policy": "unicast-magic",
+    })
+    cfg = bangjiao.load_bangjiao("p").shenpi
+    assert cfg.delivery_policy == "broadcast"  # unknown → safe default
+
+
+def test_shenpi_config_clamps_negative_retry(root_dir):
+    _seed(root_dir, "p", shenpi_block={
+        "enabled": True, "max_retries": -7, "backoff_seconds": -1,
+    })
+    cfg = bangjiao.load_bangjiao("p").shenpi
+    assert cfg.max_retries == 0
+    assert cfg.backoff_seconds == 3.0      # negative → default
+
+
+# --- broadcast policy -----------------------------------------------------
+
+
+def test_broadcast_fires_all_channels_in_parallel(root_dir, monkeypatch, fast_backoff):
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    a_send, a_calls = _fake_channel("a")
+    b_send, b_calls = _fake_channel("b")
+    _patch_channels(monkeypatch, {"a": a_send, "b": b_send})
+    cfg = bangjiao.ShenpiConfig(
+        enabled=True, channels=["a", "b"], delivery_policy="broadcast",
+    )
+    out = asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    assert out == {"a": "ok", "b": "ok"}
+    assert a_calls == [1]
+    assert b_calls == [1]
+
+
+def test_broadcast_retries_only_the_failing_channel(root_dir, monkeypatch, fast_backoff):
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    a_send, a_calls = _fake_channel("a", fail_first_n=2)   # fails twice then OK
+    b_send, b_calls = _fake_channel("b")                    # OK immediately
+    _patch_channels(monkeypatch, {"a": a_send, "b": b_send})
+    cfg = bangjiao.ShenpiConfig(
+        enabled=True, channels=["a", "b"],
+        delivery_policy="broadcast", max_retries=3, backoff_seconds=0.01,
+    )
+    out = asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    assert out == {"a": "ok", "b": "ok"}
+    assert len(a_calls) == 3   # 2 fail + 1 success
+    assert len(b_calls) == 1   # didn't retry; succeeded first try
+
+
+def test_broadcast_records_failure_after_retry_budget_exhausted(root_dir, monkeypatch, fast_backoff):
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    a_send, a_calls = _fake_channel("a", fail_first_n=999)   # always fails
+    _patch_channels(monkeypatch, {"a": a_send})
+    cfg = bangjiao.ShenpiConfig(
+        enabled=True, channels=["a"], max_retries=2, backoff_seconds=0.01,
+    )
+    out = asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    assert out["a"].startswith("error:")
+    assert len(a_calls) == 3   # 1 initial + 2 retries
+    log = (pdir / "logs" / "approval-log.jsonl").read_text()
+    actions = [json.loads(l)["action"] for l in log.splitlines()]
+    assert actions.count("notify_attempt_failed") == 3
+    assert actions.count("notify_failed") == 1
+    assert "notified" not in actions
+
+
+# --- escalate policy ------------------------------------------------------
+
+
+def test_escalate_stops_on_first_success(root_dir, monkeypatch, fast_backoff):
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    a_send, a_calls = _fake_channel("a")
+    b_send, b_calls = _fake_channel("b")
+    _patch_channels(monkeypatch, {"a": a_send, "b": b_send})
+    cfg = bangjiao.ShenpiConfig(
+        enabled=True, channels=["a", "b"], delivery_policy="escalate",
+    )
+    out = asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    assert out == {"a": "ok"}            # b not even attempted
+    assert len(a_calls) == 1
+    assert len(b_calls) == 0
+
+
+def test_escalate_falls_through_after_first_channel_exhausts_retries(
+        root_dir, monkeypatch, fast_backoff):
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    a_send, a_calls = _fake_channel("a", fail_first_n=999)   # always fails
+    b_send, b_calls = _fake_channel("b")                      # succeeds
+    _patch_channels(monkeypatch, {"a": a_send, "b": b_send})
+    cfg = bangjiao.ShenpiConfig(
+        enabled=True, channels=["a", "b"],
+        delivery_policy="escalate", max_retries=2, backoff_seconds=0.01,
+    )
+    out = asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    assert out["a"].startswith("error:")
+    assert out["b"] == "ok"
+    assert len(a_calls) == 3   # exhausted its retry budget
+    assert len(b_calls) == 1
+
+
+def test_escalate_all_channels_fail(root_dir, monkeypatch, fast_backoff):
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    a_send, _ = _fake_channel("a", fail_first_n=999)
+    b_send, _ = _fake_channel("b", fail_first_n=999)
+    _patch_channels(monkeypatch, {"a": a_send, "b": b_send})
+    cfg = bangjiao.ShenpiConfig(
+        enabled=True, channels=["a", "b"],
+        delivery_policy="escalate", max_retries=1, backoff_seconds=0.01,
+    )
+    out = asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    assert out["a"].startswith("error:")
+    assert out["b"].startswith("error:")
+
+
+# --- per-channel retry override ------------------------------------------
+
+
+def test_per_channel_max_retries_overrides_global(root_dir, monkeypatch, fast_backoff):
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    feishu_send, feishu_calls = _fake_channel("feishu", fail_first_n=999)
+    _patch_channels(monkeypatch, {"feishu": feishu_send})
+    cfg = bangjiao.ShenpiConfig(
+        enabled=True, channels=["feishu"],
+        max_retries=1,              # global default = 1 retry
+        backoff_seconds=0.01,
+        feishu=bangjiao.FeishuChannelConfig(
+            webhook_url="x", max_retries=4,    # per-channel = 4 retries
+        ),
+    )
+    asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    # 1 initial + 4 retries = 5 attempts (per-channel wins over global)
+    assert len(feishu_calls) == 5
+
+
+def test_per_channel_max_retries_zero_disables_retry(
+        root_dir, monkeypatch, fast_backoff):
+    """A per-channel ``max_retries: 0`` should beat a generous global default."""
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    feishu_send, feishu_calls = _fake_channel("feishu", fail_first_n=999)
+    _patch_channels(monkeypatch, {"feishu": feishu_send})
+    cfg = bangjiao.ShenpiConfig(
+        enabled=True, channels=["feishu"],
+        max_retries=5,                # global default = 5 retries
+        feishu=bangjiao.FeishuChannelConfig(
+            webhook_url="x", max_retries=0,    # per-channel = NO retry
+        ),
+    )
+    asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    assert len(feishu_calls) == 1     # one attempt, no retry
+
+
+def test_max_retries_zero_preserves_pr5_behaviour(root_dir, monkeypatch, fast_backoff):
+    """Default config (max_retries=0, broadcast) must behave exactly like PR-5."""
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    a_send, a_calls = _fake_channel("a", fail_first_n=999)
+    _patch_channels(monkeypatch, {"a": a_send})
+    cfg = bangjiao.ShenpiConfig(enabled=True, channels=["a"])  # PR-5 defaults
+    out = asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    assert out["a"].startswith("error:")
+    assert len(a_calls) == 1
+
+
+# --- backoff timing ------------------------------------------------------
+
+
+def test_backoff_uses_exponential_doubling(root_dir, monkeypatch):
+    """``backoff_seconds * 2**attempt`` between failed attempts."""
+    pdir = _seed(root_dir, "p")
+    item = _make_item(pdir)
+    sleeps: list[float] = []
+    async def _capture(d):
+        sleeps.append(d)
+    monkeypatch.setattr(asyncio, "sleep", _capture)
+    a_send, _ = _fake_channel("a", fail_first_n=999)
+    _patch_channels(monkeypatch, {"a": a_send})
+    cfg = bangjiao.ShenpiConfig(
+        enabled=True, channels=["a"], max_retries=3, backoff_seconds=2.0,
+    )
+    asyncio.run(shenpi.notify(item, shenpi_cfg=cfg))
+    # 3 retries → 3 sleeps: 2*2^0, 2*2^1, 2*2^2 = 2, 4, 8
+    assert sleeps == [2.0, 4.0, 8.0]
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
