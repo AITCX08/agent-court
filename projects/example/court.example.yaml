@@ -1,0 +1,43 @@
+# agent-court demo project template -- rendered into
+# $COURT_ROOT/projects/<project>/court.yaml by court-onboard.
+#
+# Placeholders {{HOSTNAME}} and {{PROJECT}} are substituted at render time;
+# do not edit them out of this file. Once rendered, edit the result in
+# $COURT_ROOT/projects/<project>/court.yaml freely.
+
+project: "{{PROJECT}}"
+session: "{{PROJECT}}"
+attach_window: foreman
+
+default_cli: claude
+
+roles:
+  - name: foreman
+    role: 总管 -- demo dispatcher
+    prompt: foreman.md
+    work_dir: "$HOME"
+    model: ""
+
+utility_windows:
+  - name: bus
+    cmd: "tail -f $COURT_ROOT/projects/{{PROJECT}}/shared/event.log"
+  - name: shell
+    cmd: "cd $HOME && exec $SHELL"
+
+# ---------------------------------------------------------------------------
+# 邦交 (bangjiao / federation) -- enabled by default in the demo project so
+# the post-onboard `court-up demo` immediately exposes foreman for invite-
+# token-based handshakes. Override `court_id` if you keep multiple demos.
+# ---------------------------------------------------------------------------
+bangjiao:
+  enabled: true
+  court_id: "{{HOSTNAME}}-{{PROJECT}}"
+  expose_roles:
+    - foreman
+  allow_paths:
+    - "bus/foreman/inbox/**"
+  deny_paths:
+    - "prompts/**"
+  tuiguan:
+    timeout_seconds: 30
+    confidence_threshold: 0.6

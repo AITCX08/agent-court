@@ -122,6 +122,34 @@ in_reply_to: 5a2c1b0d        # 可选
 
 ## 快速上手
 
+### 一键 onboard (macOS, PR-7)
+
+新同事拿到 invite token 后, 一行命令搞定环境 + 加入联邦:
+
+```bash
+git clone https://github.com/YOUR_GH_USER/agent-court.git ~/agent-court
+cd ~/agent-court
+bin/court-onboard --invite-token <TOKEN>
+```
+
+没有 token 时省略 `--invite-token`, 只装本地 demo project (不联邦)。
+默认走交互菜单, 让你勾选 `core` / `dotfiles` / `default-skills` 三层;
+传 `--no-tui` 直接装 core。
+
+发起人侧生成 token:
+
+```bash
+bin/court-invite-export demo
+```
+
+把命令输出的 base64 字符串发给新同事即可 (有效期 7 天)。
+
+> 目前只支持 macOS。Linux/Windows 在后续 issue 中跟进。
+> 想跑 `curl | bash` 一行装? 请先 `cat` 一眼脚本再决定。
+
+下面的"前置条件 / 安装"段落是手动安装路径, 跟 `court-onboard` 等价 ——
+两条路任选其一。
+
 ### 前置条件
 
 - macOS 或 Linux
