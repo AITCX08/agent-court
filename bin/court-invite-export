@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# agent-court -- emit a base64url invite token for a project so a new
+# peer can join via `court-onboard --invite-token <TOKEN>`.
+#
+# Usage:
+#   court-invite-export <project> [--url http://host:8765]
+#
+# If --url is omitted we try ipconfig getifaddr en0; on miss the user
+# is asked to fill in the URL manually before sending.
+
+set -euo pipefail
+
+BIN="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$BIN/.." && pwd)"
+MCP_DIR="$REPO_ROOT/mcp/court-mcp"
+VENV_PY="${COURT_VENV_PY:-$MCP_DIR/.venv/bin/python}"
+COURT_ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+
+usage() {
+  cat <<EOF
+court-invite-export -- emit an invite token for a peer
+
+USAGE:
+  court-invite-export <project> [--url URL]
+
+OPTIONS:
+  --url URL   override the URL advertised in the token
+              (default: http://\$(ipconfig getifaddr en0):8765)
+EOF
+}
+
+[ $# -ge 1 ] || { usage >&2; exit 2; }
+PROJECT="$1"; shift
+URL_OVERRIDE=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --url) URL_OVERRIDE="$2"; shift 2 ;;
+    --url=*) URL_OVERRIDE="${1#--url=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [ ! -x "$VENV_PY" ]; then
+  echo "[invite-export] missing python venv at $VENV_PY -- run bin/court-onboard first" >&2
+  exit 1
+fi
+
+PUB_KEY="$COURT_ROOT/projects/$PROJECT/identity/pub.key"
+COURT_YAML="$COURT_ROOT/projects/$PROJECT/court.yaml"
+[ -f "$PUB_KEY" ] || { echo "[invite-export] no pub.key at $PUB_KEY (run court-onboard)" >&2; exit 1; }
+[ -f "$COURT_YAML" ] || { echo "[invite-export] no court.yaml at $COURT_YAML" >&2; exit 1; }
+
+PUB_B64="$(tr -d '\n' < "$PUB_KEY")"
+
+FINGERPRINT="$("$VENV_PY" -c "from bangjiao import fingerprint_from_pub_b64; print(fingerprint_from_pub_b64('$PUB_B64'))")"
+
+COURT_ID="$("$VENV_PY" -c "
+import yaml, socket
+with open('$COURT_YAML') as f:
+    data = yaml.safe_load(f) or {}
+bj = data.get('bangjiao') or {}
+default = f\"{socket.gethostname().split('.')[0]}-$PROJECT\"
+print(bj.get('court_id') or default)
+")"
+
+if [ -n "$URL_OVERRIDE" ]; then
+  URL="$URL_OVERRIDE"
+else
+  LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
+  if [ -n "$LAN_IP" ]; then
+    URL="http://$LAN_IP:8765"
+  else
+    echo "[invite-export] could not detect LAN IP; pass --url http://host:8765" >&2
+    exit 1
+  fi
+fi
+
+TOKEN="$("$VENV_PY" "$MCP_DIR/onboard.py" encode-token \
+  --court-id "$COURT_ID" \
+  --pub-b64 "$PUB_B64" \
+  --url "$URL" \
+  --fingerprint "$FINGERPRINT")"
+
+cat <<EOF
+
+# ===== invite token (valid for 7 days) =====
+$TOKEN
+# ============================================
+
+# Share the token above with your peer. They run:
+#   court-onboard --invite-token $TOKEN
+# Token includes:
+#   court_id    = $COURT_ID
+#   url         = $URL
+#   fingerprint = $FINGERPRINT
+EOF

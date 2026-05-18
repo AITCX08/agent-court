@@ -123,6 +123,36 @@ frontmatter to route. Replies set `in_reply_to` to chain a conversation.
 
 ## Quickstart
 
+### One-shot onboard (macOS, PR-7)
+
+Got an invite token from a teammate? One command sets up the environment
+and joins the federation:
+
+```bash
+git clone https://github.com/YOUR_GH_USER/agent-court.git ~/agent-court
+cd ~/agent-court
+bin/court-onboard --invite-token <TOKEN>
+```
+
+Without a token, drop `--invite-token` and you get a local-only demo
+project. The default flow is an interactive menu where you opt into
+`core` / `dotfiles` / `default-skills`; pass `--no-tui` to just install
+core.
+
+On the inviter side, generate a token with:
+
+```bash
+bin/court-invite-export demo
+```
+
+The printed base64 string is the invite (valid for 7 days).
+
+> macOS only for now. Linux/Windows are tracked in a follow-up issue.
+> If you want a `curl | bash` one-liner, please `cat` the script first.
+
+The "Prerequisites / Install" sections below are the manual path and
+end up with the same setup -- pick either route.
+
 ### Prerequisites
 
 - macOS or Linux

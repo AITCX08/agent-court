@@ -1,0 +1,485 @@
+#!/usr/bin/env bash
+# agent-court — one-shot onboarding installer (macOS only for PR-7).
+#
+# Usage:
+#   court-onboard                          # interactive: prompt for core/dotfiles/skills
+#   court-onboard --no-tui                 # non-interactive: core only
+#   court-onboard --invite-token <TOKEN>   # also join the inviter's federation
+#   court-onboard --court-root <PATH>      # override $COURT_ROOT (default ~/.agent-court)
+#   court-onboard --verify                 # re-run only the post-install checklist
+#   court-onboard --help
+#
+# Exit codes:
+#   0  success
+#   1  unmet precondition (non-macOS, no Homebrew, bad invite-token, ...)
+#   2  bad CLI usage
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# ---------------------------------------------------------------------------
+# Global state
+# ---------------------------------------------------------------------------
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+MCP_DIR="$REPO_ROOT/mcp/court-mcp"
+VENV_PY="$MCP_DIR/.venv/bin/python"
+
+COURT_ROOT_DEFAULT="$HOME/.agent-court"
+COURT_ROOT=""
+INVITE_TOKEN=""
+TUI_ENABLED=1
+VERIFY_ONLY=0
+
+# Three install layers, set later by prompt_selection() / --no-tui defaults.
+INSTALL_CORE=1
+INSTALL_DOTFILES=0
+INSTALL_SKILLS=0
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+log()  { printf '[onboard] %s\n' "$*"; }
+warn() { printf '[onboard] WARN: %s\n' "$*" >&2; }
+die()  { printf '[onboard] ERROR: %s\n' "$*" >&2; exit "${2:-1}"; }
+
+usage() {
+  cat <<EOF
+court-onboard — one-shot installer for agent-court (macOS)
+
+USAGE:
+  court-onboard [OPTIONS]
+
+OPTIONS:
+  --no-tui                 Skip interactive menu, install core layer only
+  --invite-token <TOKEN>   Join an existing court via base64 invite token
+  --court-root <PATH>      Override court root directory
+                           (default: \$HOME/.agent-court)
+  --verify                 Re-run the post-install checklist only
+  -h, --help               Show this message
+
+WHAT GETS INSTALLED:
+  core       brew packages (ghostty, fish, tmux, fswatch, jq), python venv,
+             pip-yq (kislyuk/yq), PATH wiring, demo project keypair
+  dotfiles   fish + tmux + starship config (existing files get .bak.<ts>)
+  skills     PR-9 placeholder (prints a notice and skips)
+
+EOF
+}
+
+resolve_abs_path() {
+  # Portable absolute-path resolver (no readlink -f on macOS).
+  local p="$1"
+  case "$p" in
+    /*) printf '%s\n' "$p" ;;
+    *)  printf '%s\n' "$(cd "$(dirname "$p")" 2>/dev/null && pwd)/$(basename "$p")" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Preconditions
+# ---------------------------------------------------------------------------
+
+detect_os() {
+  if [ "$(uname -s)" != "Darwin" ]; then
+    die "PR-7 currently supports macOS only. Linux/Windows tracked in a follow-up issue."
+  fi
+}
+
+require_brew() {
+  if ! command -v brew >/dev/null 2>&1; then
+    cat >&2 <<EOF
+[onboard] ERROR: Homebrew not found.
+
+Install Homebrew first (one-liner from https://brew.sh):
+  /bin/bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+Re-run court-onboard once \`brew --version\` works.
+EOF
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-tui)
+        TUI_ENABLED=0
+        shift
+        ;;
+      --invite-token)
+        [ $# -ge 2 ] || { usage >&2; exit 2; }
+        INVITE_TOKEN="$2"
+        shift 2
+        ;;
+      --invite-token=*)
+        INVITE_TOKEN="${1#--invite-token=}"
+        shift
+        ;;
+      --court-root)
+        [ $# -ge 2 ] || { usage >&2; exit 2; }
+        COURT_ROOT="$2"
+        shift 2
+        ;;
+      --court-root=*)
+        COURT_ROOT="${1#--court-root=}"
+        shift
+        ;;
+      --verify)
+        VERIFY_ONLY=1
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        printf 'unknown option: %s\n\n' "$1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  COURT_ROOT="${COURT_ROOT:-$COURT_ROOT_DEFAULT}"
+  COURT_ROOT="$(resolve_abs_path "$COURT_ROOT")"
+}
+
+# ---------------------------------------------------------------------------
+# Stage stubs (filled in by later tasks T7.2 ~ T7.8)
+# ---------------------------------------------------------------------------
+
+prompt_selection() {
+  # Drive INSTALL_CORE / INSTALL_DOTFILES / INSTALL_SKILLS through either:
+  #   - gum choose (TUI, multi-select) if `gum` is on PATH
+  #   - 3x read -p Y/n fallback otherwise
+  # Defaults: core=Y, dotfiles=n, skills=n. core is always on (PR-7 requires
+  # the demo project + venv to do anything meaningful).
+  INSTALL_CORE=1
+
+  local selection
+  if command -v gum >/dev/null 2>&1; then
+    selection="$(gum choose --no-limit --header="Select install layers (space to toggle, enter to confirm):" \
+      --selected="core,dotfiles" \
+      "core" "dotfiles" "default-skills" || true)"
+  else
+    log "gum not found, falling back to plain prompts (install gum for a nicer menu)"
+    local ans_dot ans_skills
+    printf '  install dotfiles (fish/tmux/starship)? [y/N] '
+    read -r ans_dot || ans_dot=""
+    printf '  install default-skills (PR-9 placeholder, currently a no-op)? [y/N] '
+    read -r ans_skills || ans_skills=""
+    selection="core"
+    case "$ans_dot"    in [Yy]*) selection="$selection"$'\n'"dotfiles"     ;; esac
+    case "$ans_skills" in [Yy]*) selection="$selection"$'\n'"default-skills" ;; esac
+  fi
+
+  # selection is newline-separated layer names. core is non-negotiable above.
+  case "$selection" in *dotfiles*)       INSTALL_DOTFILES=1 ;; esac
+  case "$selection" in *default-skills*) INSTALL_SKILLS=1   ;; esac
+
+  printf '\n[onboard] selected layers:\n'
+  printf '  core           = on\n'
+  printf '  dotfiles       = %s\n' "$( [ "$INSTALL_DOTFILES" = "1" ] && echo on || echo off )"
+  printf '  default-skills = %s\n\n' "$( [ "$INSTALL_SKILLS"   = "1" ] && echo on || echo off )"
+
+  printf 'proceed? [Y/n] '
+  local confirm=""
+  read -r confirm || confirm=""
+  case "$confirm" in
+    [Nn]*) log "aborted by user"; exit 0 ;;
+  esac
+}
+install_core() {
+  log "installing core layer ..."
+  install_brew_packages
+  install_python_venv
+  setup_path
+  create_demo_project
+}
+
+install_brew_packages() {
+  # ghostty is a cask; everything else is a regular formula.
+  if ! brew list --cask ghostty >/dev/null 2>&1 && ! brew list ghostty >/dev/null 2>&1; then
+    log "brew install --cask ghostty"
+    brew install --cask ghostty 2>/dev/null || \
+      warn "ghostty install failed via cask. Continuing without it -- you can install manually from https://ghostty.org"
+  fi
+
+  local pkg
+  for pkg in fish tmux fswatch jq; do
+    if brew list "$pkg" >/dev/null 2>&1; then
+      log "$pkg already installed"
+    else
+      log "brew install $pkg"
+      brew install "$pkg"
+    fi
+  done
+}
+
+install_python_venv() {
+  if [ ! -x "$VENV_PY" ]; then
+    log "creating python venv at $MCP_DIR/.venv ..."
+    if ! command -v uv >/dev/null 2>&1; then
+      log "uv not found; brew install uv"
+      brew install uv
+    fi
+    ( cd "$MCP_DIR" && uv venv .venv && uv pip install --python .venv/bin/python -e . )
+  else
+    log "venv already exists at $VENV_PY"
+  fi
+
+  # Pip-yq (kislyuk/yq) is required by bin/court-up's .session lookup
+  # (jq syntax). Keep it inside the venv to avoid colliding with mikefarah/yq
+  # which a homebrew user may have on PATH. uv venv ships without pip on
+  # purpose, so we drive installs through `uv pip` against the venv.
+  if "$VENV_PY" -c "import yq" >/dev/null 2>&1; then
+    log "pip-yq already installed in venv"
+  else
+    log "uv pip install yq (kislyuk/yq) into venv"
+    uv pip install --python "$VENV_PY" --quiet yq
+  fi
+}
+
+setup_path() {
+  # fish: drop a conf.d snippet that appends bin/ to PATH for every fish shell.
+  local fish_conf_dir="$HOME/.config/fish/conf.d"
+  local fish_snippet="$fish_conf_dir/agent-court.fish"
+  mkdir -p "$fish_conf_dir"
+  if [ ! -f "$fish_snippet" ] || ! grep -q "$REPO_ROOT/bin" "$fish_snippet" 2>/dev/null; then
+    cat > "$fish_snippet" <<EOF
+# Added by court-onboard. Safe to edit; re-running onboard rewrites only if
+# this file does not already mention the current REPO_ROOT.
+fish_add_path -p "$REPO_ROOT/bin"
+EOF
+    log "wired bin/ into fish PATH ($fish_snippet)"
+  else
+    log "fish PATH already wired"
+  fi
+
+  # zsh: append once. Existence-check is grep-based so a manual edit can be
+  # preserved verbatim.
+  local zshrc="$HOME/.zshrc"
+  touch "$zshrc"
+  if ! grep -F -q "$REPO_ROOT/bin" "$zshrc"; then
+    printf '\n# Added by court-onboard\nexport PATH="%s/bin:$PATH"\n' "$REPO_ROOT" >> "$zshrc"
+    log "wired bin/ into zsh PATH ($zshrc)"
+  else
+    log "zsh PATH already wired"
+  fi
+}
+
+create_demo_project() {
+  local demo_dir="$COURT_ROOT/projects/demo"
+  mkdir -p "$demo_dir"/{identity,grants,logs,bus,shared}
+
+  # peers.yaml: seed with the example template so the user can see the shape
+  # immediately. Real peers get added later by apply_invite_token().
+  if [ ! -f "$demo_dir/peers.yaml" ]; then
+    cp "$REPO_ROOT/projects/example/peers.example.yaml" "$demo_dir/peers.yaml"
+    log "wrote $demo_dir/peers.yaml from example"
+  fi
+
+  # court.yaml: render from template via onboard.py (handles HOSTNAME/PROJECT
+  # substitution + writes bangjiao block enabled).
+  if [ ! -f "$demo_dir/court.yaml" ]; then
+    "$VENV_PY" "$MCP_DIR/onboard.py" write-court-yaml \
+      --template "$REPO_ROOT/projects/example/court.example.yaml" \
+      --out "$demo_dir/court.yaml" \
+      --project demo
+    log "wrote $demo_dir/court.yaml"
+  else
+    log "$demo_dir/court.yaml already exists, keeping it"
+  fi
+
+  # Generate the ed25519 keypair. We import bangjiao directly instead of going
+  # through bin/court-keygen because the latter execs a missing keygen.py
+  # entry point on main (see commit log for the rename to zhuyin.py).
+  if [ ! -f "$demo_dir/identity/priv.key" ]; then
+    COURT_ROOT="$COURT_ROOT" "$VENV_PY" - <<'PY'
+import os
+os.environ.setdefault("COURT_ROOT", os.environ["COURT_ROOT"])
+from bangjiao import generate_keypair
+identity = generate_keypair("demo")
+print(f"[onboard] keypair fingerprint = {identity.fingerprint}")
+PY
+  else
+    log "demo keypair already exists, keeping it"
+  fi
+}
+install_dotfiles() {
+  log "installing dotfiles layer (existing files get .bak.<ts>) ..."
+  local ts
+  ts="$(date +%Y%m%d-%H%M%S)"
+  local src_dir="$REPO_ROOT/dotfiles"
+
+  # Parallel arrays for src/dst pairs -- bash 3.2 (macOS system bash)
+  # does not have associative arrays.
+  local -a srcs=(
+    "$src_dir/fish/config.fish"
+    "$src_dir/fish/conf.d/agent-court.fish"
+    "$src_dir/fish/functions/court-aliases.fish"
+    "$src_dir/tmux/tmux.conf"
+    "$src_dir/starship.toml"
+  )
+  local -a dsts=(
+    "$HOME/.config/fish/config.fish"
+    "$HOME/.config/fish/conf.d/agent-court.fish"
+    "$HOME/.config/fish/functions/court-aliases.fish"
+    "$HOME/.tmux.conf"
+    "$HOME/.config/starship.toml"
+  )
+
+  local i src dst
+  for i in "${!srcs[@]}"; do
+    src="${srcs[$i]}"
+    dst="${dsts[$i]}"
+    mkdir -p "$(dirname "$dst")"
+    if [ -f "$dst" ] && ! cmp -s "$src" "$dst"; then
+      cp "$dst" "$dst.bak.$ts"
+      log "backed up $dst -> $dst.bak.$ts"
+    fi
+    install -m 0644 "$src" "$dst"
+  done
+
+  # Rewrite the PATH placeholder in the freshly installed conf.d snippet.
+  local snippet="$HOME/.config/fish/conf.d/agent-court.fish"
+  if grep -q '<<<REPO_ROOT>>>' "$snippet"; then
+    # sed -i needs an extension arg on BSD/macOS; use empty string.
+    sed -i '' "s|<<<REPO_ROOT>>>|$REPO_ROOT|g" "$snippet"
+    log "rewrote REPO_ROOT placeholder in $snippet"
+  fi
+
+  log "dotfiles installed"
+}
+install_default_skills() {
+  # TODO(PR-9 baoku): pull the default skill manifest, verify ed25519 sigs,
+  # and install fish functions / mcp tools / shell scripts under
+  # $COURT_ROOT/skills/. Keep this function signature stable so PR-9 only
+  # has to replace the body.
+  log "default-skills layer (PR-9 baoku) not released yet -- skipping."
+  return 0
+}
+apply_invite_token() {
+  [ -n "$INVITE_TOKEN" ] || return 0
+  log "decoding invite token ..."
+
+  local decoded
+  if ! decoded="$("$VENV_PY" "$MCP_DIR/onboard.py" decode-token "$INVITE_TOKEN" 2>&1)"; then
+    die "invite token rejected: $decoded"
+  fi
+
+  # decoded is a single JSON line. Pluck the fields we need without bringing
+  # in a python helper -- jq is installed by install_core.
+  local court_id pub_b64 url fingerprint
+  court_id="$(printf '%s' "$decoded" | jq -r '.court_id')"
+  pub_b64="$(printf '%s' "$decoded" | jq -r '.pub_b64')"
+  url="$(printf '%s' "$decoded" | jq -r '.url')"
+  fingerprint="$(printf '%s' "$decoded" | jq -r '.fingerprint')"
+
+  local peers_yaml="$COURT_ROOT/projects/demo/peers.yaml"
+  [ -f "$peers_yaml" ] || die "no peers.yaml at $peers_yaml -- run install_core first"
+
+  "$VENV_PY" "$MCP_DIR/onboard.py" add-peer \
+    --peers-yaml "$peers_yaml" \
+    --court-id "$court_id" \
+    --pub-b64 "$pub_b64" \
+    --url "$url" \
+    --fingerprint "$fingerprint" \
+    --relation parent \
+    --policy-tier tier_b
+
+  log "joined federation via inviter $court_id"
+}
+verify_and_print() {
+  local demo_dir="$COURT_ROOT/projects/demo"
+  local fingerprint="unknown"
+  local court_id="unknown"
+  local key_ok="[ ]" path_ok="[ ]" cfg_ok="[ ]"
+
+  if [ -f "$demo_dir/identity/pub.key" ]; then
+    key_ok="[x]"
+    local pub_b64
+    pub_b64="$(tr -d '\n' < "$demo_dir/identity/pub.key")"
+    fingerprint="$("$VENV_PY" -c "from bangjiao import fingerprint_from_pub_b64; print(fingerprint_from_pub_b64('$pub_b64'))" 2>/dev/null || printf unknown)"
+  fi
+
+  if [ -f "$demo_dir/court.yaml" ]; then
+    cfg_ok="[x]"
+    court_id="$("$VENV_PY" -c "
+import yaml
+with open('$demo_dir/court.yaml') as f:
+    data = yaml.safe_load(f) or {}
+print((data.get('bangjiao') or {}).get('court_id', 'unknown'))
+" 2>/dev/null || printf unknown)"
+  fi
+
+  if grep -qF "$REPO_ROOT/bin" "$HOME/.zshrc" 2>/dev/null; then
+    path_ok="[x]"
+  fi
+
+  local nested_tmux_warning=""
+  if [ -n "${TMUX:-}" ]; then
+    nested_tmux_warning=$'\nNOTE: you are inside an existing tmux session -- open a new terminal\n      before running court-up to avoid nesting.'
+  fi
+
+  cat <<EOF
+
+## Welcome to agent-court (demo project)
+
+- $key_ok  keypair at $demo_dir/identity/
+       fingerprint = $fingerprint
+       court_id    = $court_id
+- $cfg_ok  demo court.yaml + peers.yaml at $demo_dir/
+- $path_ok  bin/ wired into fish and zsh PATH
+
+Next steps:
+- [ ] reload PATH:           source ~/.zshrc   (or open a new terminal)
+- [ ] start the session:     court-up demo
+- [ ] attach when ready:     tmux attach -t demo
+- [ ] hand out an invite:    court-invite-export demo
+- [ ] regenerate checklist:  court-onboard --verify
+$nested_tmux_warning
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+main() {
+  parse_args "$@"
+  detect_os
+  require_brew
+
+  log "REPO_ROOT  = $REPO_ROOT"
+  log "COURT_ROOT = $COURT_ROOT"
+
+  if [ "$VERIFY_ONLY" = "1" ]; then
+    verify_and_print
+    exit 0
+  fi
+
+  if [ "$TUI_ENABLED" = "1" ]; then
+    prompt_selection
+  fi
+
+  [ "$INSTALL_CORE" = "1" ]     && install_core
+  [ "$INSTALL_DOTFILES" = "1" ] && install_dotfiles
+  [ "$INSTALL_SKILLS" = "1" ]   && install_default_skills
+
+  if [ -n "$INVITE_TOKEN" ]; then
+    apply_invite_token
+  fi
+
+  verify_and_print
+}
+
+if [ "${ONBOARD_NO_MAIN:-0}" != "1" ]; then
+  main "$@"
+fi
