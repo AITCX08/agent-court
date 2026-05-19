@@ -12,10 +12,10 @@
 
 ## 先建立心智模型
 
-一座"法庭"住在**某台机器上的某个 project** ——
+一座"朝廷"住在**某台机器上的某个 project** ——
 `$COURT_ROOT/projects/<project>/`。每个 project 有自己的密钥对、自己的
 `peers.yaml`、自己的 `court_id`。同一台机器上的两个 project 互相**无法**
-推断对方存在；对外它们就是两座独立的法庭。
+推断对方存在；对外它们就是两座独立的朝廷。
 
 也就是说，**下面的每一步对每一对要联邦的 project 都得重复做一遍**。
 给 `project-A` 生过一次密钥对，并**不**能让同机的 `project-B` 也能联邦。
@@ -161,7 +161,7 @@ COURT_PEER_BIND=0.0.0.0:8767 nohup court-peer ops       > ~/.agent-court/logs/pe
 的条目就用对应的 URL。
 
 身份、peers、policy、bus 目录都是 project 级的 —— 同一台机器上三个
-守护进程实际上跑着三座独立的法庭。被授权派活到 `example` 的远端
+守护进程实际上跑着三座独立的朝廷。被授权派活到 `example` 的远端
 **绝不可能**够到 `client-a` 或 `ops`。
 
 如果那个 project 的 `court.yaml` 关闭了联邦，守护进程会拒绝启动，

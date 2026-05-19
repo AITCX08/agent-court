@@ -3,7 +3,7 @@
 # agent-court
 
 > A tiny local multi-agent orchestrator. Each project under your `agent-court`
-> installation is a small **court** of LLM CLI processes — one tmux window
+> installation is a small **imperial court** of LLM CLI processes — one tmux window
 > per role — coordinating through a filesystem message bus. An MCP server
 > exposes the bus upstream so any personal-assistant LLM (Claude Code,
 > Cursor, Zed, …) can dispatch work in. Multiple machines can federate over

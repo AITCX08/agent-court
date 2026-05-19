@@ -3,7 +3,7 @@
 # agent-court
 
 > 一个本地的、迷你的多 Agent 编排器。你的 `agent-court` 安装下的每个
-> project 都是一座小**法庭**（court），由若干 LLM CLI 进程组成 ——
+> project 都是一座小**朝廷**（court），由若干 LLM CLI 进程组成 ——
 > 一个角色一个 tmux 窗口 —— 通过文件系统消息总线协调工作。一个
 > MCP server 把这条总线暴露给上游，让任何个人助手 LLM（Claude Code、
 > Cursor、Zed 等等）都能往里派活。多台机器之间可以走 HTTP，配合
@@ -501,7 +501,7 @@ IPC、外部 watcher。抽象更糙，可观察性更好。
 
 技术上**可以**，但设计上故意劝退。每个 project 一个 key 的意义
 是："Alice 替客户 A 的工作"和"Alice 替客户 B 的工作"在网络上是
-两座完全不同的法庭 —— Alice 替 project A 联邦过的对端，**不会**
+两座完全不同的朝廷 —— Alice 替 project A 联邦过的对端，**不会**
 因为这份信任，就能看到或派活到 project B。
 **不同的 project = 不同的 `court_id` + 不同的 key + 不同的 `peers.yaml`**。
 跨 project 共用密钥对会把这层隔离压垮。
