@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# agent-court PR-8 -- stop the jushi daemon for a project.
+#
+# Tries SIGTERM (lets the daemon flush state); falls back to SIGKILL
+# after a short grace window.
+set -euo pipefail
+
+PROJECT="${1:-}"
+[ -n "$PROJECT" ] || { echo "[jushi-down] usage: jushi-down <project>" >&2; exit 2; }
+
+COURT_ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+PID_FILE="$COURT_ROOT/projects/$PROJECT/logs/jushi.pid"
+
+if [ ! -f "$PID_FILE" ]; then
+  echo "[jushi-down:$PROJECT] no pid file at $PID_FILE -- not running?"
+  exit 0
+fi
+
+PID="$(cat "$PID_FILE")"
+if ! kill -0 "$PID" 2>/dev/null; then
+  echo "[jushi-down:$PROJECT] stale pid $PID; cleaning up"
+  rm -f "$PID_FILE"
+  exit 0
+fi
+
+kill -TERM "$PID" 2>/dev/null || true
+for _ in 1 2 3 4 5; do
+  sleep 0.4
+  kill -0 "$PID" 2>/dev/null || break
+done
+
+if kill -0 "$PID" 2>/dev/null; then
+  echo "[jushi-down:$PROJECT] SIGTERM ignored; sending SIGKILL"
+  kill -KILL "$PID" 2>/dev/null || true
+fi
+
+rm -f "$PID_FILE"
+echo "[jushi-down:$PROJECT] stopped"

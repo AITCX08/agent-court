@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# agent-court PR-8 -- user-driven memory tagging.
+#
+# Wrapper around mcp/court-mcp/record.py so users can run:
+#   court-record decision "..." --project demo --body "..."
+#   court-record note     "..." --project demo --body "..."
+#   court-record list                --project demo
+#
+# Stores into $COURT_ROOT/projects/<project>/memory/dynamic/{decisions,notes}/.
+set -euo pipefail
+
+BIN="$(cd "$(dirname "$0")" && pwd)"
+MCP_DIR="$(cd "$BIN/.." && pwd)/mcp/court-mcp"
+VENV_PY="${COURT_VENV_PY:-$MCP_DIR/.venv/bin/python}"
+
+if [ ! -x "$VENV_PY" ]; then
+  echo "[court-record] missing python venv at $VENV_PY" >&2
+  echo "[court-record] run: court-onboard or set up the venv first" >&2
+  exit 1
+fi
+
+exec "$VENV_PY" "$MCP_DIR/record.py" "$@"
