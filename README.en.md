@@ -441,6 +441,46 @@ delivers the notification to a WeChat user, the user replies "approve
 Every approval action (approved / denied / expired-auto-deny / notify
 failure / etc.) is appended to `logs/approval-log.jsonl` for audit.
 
+## Dynamic memory + redaction (PR-8 jushi / 居士)
+
+A long-running daemon incrementally scans
+`~/.claude/projects/*/*.jsonl` and persists each conversation turn into
+the court project's local memory tree, after a two-layer redaction
+pipeline (keyword + regex) drops any row containing passwords, API
+keys, private IPs, long hex digests, etc. The PR-10 review agent will
+read this memory to fill in context that a teammate's request did not
+include.
+
+```bash
+jushi-up demo                 # start the daemon (idempotent; nohup detached)
+jushi-status demo             # pid + memory dir size + recent log
+jushi-down demo               # SIGTERM graceful stop
+
+court-record decision "Pick BM25" --project demo --body "reasoning..."
+court-record note     "ETL gotcha" --project demo --body "..."
+court-record list                  --project demo
+```
+
+Output lands in `$COURT_ROOT/projects/<p>/memory/dynamic/`:
+- `sessions/<YYYY-MM-DD>/<session_id>.md` -- one file per claude
+  session per day, append-only; redacted rows leave a `[redacted:
+  keyword=password]` placeholder
+- `decisions/`, `notes/` -- user-tagged high-signal entries (preferred
+  by the review agent)
+- `.cursors/` -- byte offsets so restarts do not lose progress
+
+Configure via the `jushi:` block at the top of `court.yaml`:
+
+```yaml
+jushi:
+  enabled: true
+  cwd_prefixes:                  # only collect sessions under these cwds
+    - $HOME/Desktop/K2Work
+  redact_extra_keywords: ["my-internal-secret"]
+  redact_extra_patterns: ['my-id-[0-9]+']
+  housekeeping_days: 30          # drop sessions/<date>/ older than this
+```
+
 ## Directory layout
 
 ```

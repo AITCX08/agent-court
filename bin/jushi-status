@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# agent-court PR-8 -- quick health view for jushi.
+#
+# Shows: pid + alive?, last 20 log lines, memory dir size, redact counters
+# from the last `run_once` entry.
+set -euo pipefail
+
+PROJECT="${1:-}"
+[ -n "$PROJECT" ] || { echo "[jushi-status] usage: jushi-status <project>" >&2; exit 2; }
+
+COURT_ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+LOGS="$COURT_ROOT/projects/$PROJECT/logs"
+MEMORY="$COURT_ROOT/projects/$PROJECT/memory/dynamic"
+PID_FILE="$LOGS/jushi.pid"
+LOG_FILE="$LOGS/jushi.log"
+
+echo "## jushi status for project=$PROJECT"
+echo
+
+if [ -f "$PID_FILE" ]; then
+  PID="$(cat "$PID_FILE")"
+  if kill -0 "$PID" 2>/dev/null; then
+    echo "pid:    $PID (alive)"
+  else
+    echo "pid:    $PID (stale -- daemon died)"
+  fi
+else
+  echo "pid:    -- (not running, no $PID_FILE)"
+fi
+
+if [ -d "$MEMORY" ]; then
+  bytes="$(du -sh "$MEMORY" 2>/dev/null | awk '{print $1}')"
+  sessions="$(find "$MEMORY/sessions" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+  decisions="$(find "$MEMORY/decisions" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+  notes="$(find "$MEMORY/notes" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+  echo "memory: $MEMORY ($bytes)"
+  echo "  sessions:  $sessions"
+  echo "  decisions: $decisions"
+  echo "  notes:     $notes"
+else
+  echo "memory: $MEMORY (does not exist yet)"
+fi
+
+echo
+if [ -f "$LOG_FILE" ]; then
+  echo "## last 20 log lines ($LOG_FILE)"
+  tail -20 "$LOG_FILE"
+else
+  echo "## no log yet at $LOG_FILE"
+fi

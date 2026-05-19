@@ -430,6 +430,41 @@ agent-court MCP 调 `court-approve(...)`，文件就落到 `inbox/` 完成投递
 每次审批动作（approved / denied / expired-auto-deny / 通知失败等）都追加
 到 `logs/approval-log.jsonl` 留档。
 
+## 动态记忆与脱敏（PR-8 居士 / jushi）
+
+让一个常驻守护进程默默把 `~/.claude/projects/*/*.jsonl` 里的对话**增量**
+扫到 court project 的本地记忆里，关键字 / 正则双层**脱敏**（密码、API
+密钥、私网 IP、长 hex 等命中整条不入库）。后面 PR-10 的复核 agent 就靠
+这份记忆补全同事请求里没写清楚的上下文。
+
+```bash
+jushi-up demo                 # 起 daemon（idempotent；nohup detached）
+jushi-status demo             # pid + memory dir size + 最近日志
+jushi-down demo               # SIGTERM 优雅停
+
+court-record decision "选 BM25" --project demo --body "理由..."
+court-record note     "ETL 踩坑" --project demo --body "..."
+court-record list             --project demo
+```
+
+输出落到 `$COURT_ROOT/projects/<p>/memory/dynamic/`：
+- `sessions/<日期>/<session_id>.md` — 每个 claude session 一日一文件，按
+  ts 追加，redact 命中写一行占位（`[redacted: keyword=password]`）
+- `decisions/`、`notes/` — 用户主动标的高信号条目（agent 复核时优先引用）
+- `.cursors/` — 每个 jsonl 的 byte offset，重启不丢数据
+
+在 `court.yaml` 顶层加 `jushi:` 块控制行为：
+
+```yaml
+jushi:
+  enabled: true
+  cwd_prefixes:                  # 只采这些 cwd 下的 session
+    - $HOME/Desktop/K2Work
+  redact_extra_keywords: ["my-internal-secret"]
+  redact_extra_patterns: ['my-id-[0-9]+']
+  housekeeping_days: 30          # 自动清这天数之前的 sessions/<date>/
+```
+
 ## 目录布局
 
 ```
