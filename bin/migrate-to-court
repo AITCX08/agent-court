@@ -29,16 +29,39 @@
 #   migrate-to-court --yes           # non-interactive
 #   migrate-to-court --dry-run       # preview only
 
-set -e
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PYTHON_BIN="$REPO_ROOT/mcp/court-mcp/.venv/bin/python3"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="python3"
+fi
 
 DRY=0
 YES=0
+NEW_NAME=""
+PLAN_FILE=""
+IF_NOT_EXISTS=0
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1;;
     --yes|-y)  YES=1;;
+    --new=*) NEW_NAME="${a#--new=}" ;;
+    --plan=*) PLAN_FILE="${a#--plan=}" ;;
+    --if-not-exists) IF_NOT_EXISTS=1 ;;
     -h|--help)
       head -28 "$0" | sed 's/^# \?//'; exit 0;;
+  esac
+done
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --new) NEW_NAME="${2:-}"; shift 2 ;;
+    --plan) PLAN_FILE="${2:-}"; shift 2 ;;
+    --if-not-exists) IF_NOT_EXISTS=1; shift ;;
+    --dry-run|--yes|-y|-h|--help) shift ;;
+    *) shift ;;
   esac
 done
 
@@ -47,6 +70,134 @@ NEW_ROOT="${COURT_ROOT:-$HOME/.agent-court}"
 
 say() { echo "[migrate-to-court] $*"; }
 do_or_say() { if [ $DRY -eq 1 ]; then say "DRY: $*"; else eval "$*"; fi; }
+
+if [ -n "$NEW_NAME" ]; then
+  [ -n "$PLAN_FILE" ] || { echo "[migrate-to-court] --plan is required with --new" >&2; exit 1; }
+  ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+  if [ $DRY -eq 1 ]; then
+    say "DRY: would create $ROOT/projects/$NEW_NAME from $PLAN_FILE"
+    exit 0
+  fi
+  "$PYTHON_BIN" - "$NEW_NAME" "$PLAN_FILE" "$ROOT" "$IF_NOT_EXISTS" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+import yaml
+
+name = sys.argv[1]
+plan_file = Path(sys.argv[2])
+root = Path(sys.argv[3])
+if_not_exists = sys.argv[4] == "1"
+plan = json.loads(plan_file.read_text())
+
+proj = root / "projects" / name
+if proj.exists():
+    if if_not_exists:
+        print(str(proj / "court.yaml"))
+        raise SystemExit(0)
+    raise SystemExit(f"[migrate-to-court] project already exists: {proj}")
+
+(proj / "prompts").mkdir(parents=True)
+(proj / "shared").mkdir(parents=True)
+(proj / "logs").mkdir(parents=True)
+(proj / "hooks").mkdir(parents=True)
+for role in plan["roles"] + [{"name": "upstream"}]:
+    (proj / "bus" / role["name"] / "inbox" / ".done").mkdir(parents=True, exist_ok=True)
+    (proj / "bus" / role["name"] / "outbox").mkdir(parents=True, exist_ok=True)
+
+session = plan.get("session") or f"agent-court-{name}"
+court_yaml = {
+    "project": name,
+    "session": session,
+    "attach_window": "foreman",
+    "default_cli": "claude",
+    "roles": [],
+    "utility_windows": [
+        {"name": "bus", "cmd": f"tail -f {proj / 'shared' / 'event.log'}"},
+    ],
+}
+
+for role in plan["roles"]:
+    prompt_name = f"{role['name']}.md"
+    court_yaml["roles"].append({
+        "name": role["name"],
+        "prompt": prompt_name,
+        "work_dir": role.get("work_dir", ""),
+        "cli": role.get("cli", "claude"),
+        "model": role.get("model", ""),
+    })
+    prompt = "\n".join([
+        f"# {role['name']}",
+        "",
+        role.get("instructions", f"You are the {role['name']} role for project {name}."),
+        "",
+        "Critical git rules:",
+        f"- Work only on branch prefix `{plan['branch_prefix']}`.",
+        "- Never force push.",
+        "- Never commit directly to `main`.",
+        "- Before push, run `git pull --rebase`.",
+        f"- Every commit message must end with `Issue: {plan['issue_ref']}`.",
+        "",
+        "Coordinate through the bus and keep replies concise.",
+        "",
+    ])
+    (proj / "prompts" / prompt_name).write_text(prompt)
+
+issue_ref = str(plan["issue_ref"])
+repo_slug, issue_number = issue_ref.rsplit("#", 1)
+hook_path = proj / "hooks" / "pre-push.sh"
+hook_path.write_text(
+    "\n".join([
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        f"ISSUE_NUMBER={issue_number}",
+        f"REPO_SLUG={repo_slug}",
+        "",
+        "while read -r local_ref local_sha remote_ref remote_sha; do",
+        '  branch="${local_ref#refs/heads/}"',
+        '  [ "$branch" = "main" ] && exit 1',
+        '  [[ "$branch" == auto/issue-${ISSUE_NUMBER}/* ]] || exit 1',
+        '  if [ "$remote_sha" != "0000000000000000000000000000000000000000" ]; then',
+        '    git merge-base --is-ancestor "$remote_sha" "$local_sha" || exit 1',
+        "  fi",
+        '  range="$local_sha"',
+        '  if [ "$remote_sha" != "0000000000000000000000000000000000000000" ]; then',
+        '    range="$remote_sha..$local_sha"',
+        "  fi",
+        '  while read -r commit_sha; do',
+        '    git log -1 --format=%B "$commit_sha" | grep -qE "^Issue: ${REPO_SLUG}#${ISSUE_NUMBER}$" || exit 1',
+        '  done < <(git rev-list "$range")',
+        "done",
+        "",
+    ])
+)
+hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+for role in plan["roles"]:
+    work_dir = role.get("work_dir", "")
+    if not work_dir:
+        continue
+    git_dir = Path(work_dir) / ".git"
+    if not git_dir.is_dir():
+        continue
+    target = git_dir / "hooks"
+    target.mkdir(parents=True, exist_ok=True)
+    link = target / "pre-push"
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    os.symlink(hook_path, link)
+
+(proj / "court.yaml").write_text(yaml.safe_dump(court_yaml, sort_keys=False))
+(proj / "shared" / "event.log").touch()
+print(str(proj / "court.yaml"))
+PY
+  exit 0
+fi
 
 # 1. Rename top-level dir if needed.
 if [ -d "$OLD_ROOT" ] && [ ! -e "$NEW_ROOT" ]; then

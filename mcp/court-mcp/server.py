@@ -39,6 +39,8 @@ from mcp.server.fastmcp import FastMCP
 
 import lingpai
 import bangjiao
+from gitea_client import GiteaClient, GiteaClientError
+from gitea_credentials import CredentialNotFoundError
 
 
 COURT_ROOT = Path(os.environ.get("COURT_ROOT", str(Path.home() / ".agent-court")))
@@ -786,6 +788,53 @@ def approve_pending(project: str, msg_id: str, action: str, by: str = "") -> dic
     if result in ("approved", "denied"):
         return {"ok": True, "result": result, "project": project, "msg_id": msg_id}
     return {"error": result, "project": project, "msg_id": msg_id}
+
+
+@mcp.tool()
+def list_assigned_issues(state: str = "open", since: Optional[str] = None) -> dict:
+    """Return issues assigned to the authenticated Gitea user."""
+    try:
+        issues = GiteaClient().list_assigned_issues(state=state, since=since)
+        return {"issues": issues, "count": len(issues), "fetched_at": _iso_now()}
+    except CredentialNotFoundError as e:
+        return {"error": "credential_not_found", "detail": str(e)}
+    except GiteaClientError as e:
+        return {"error": "gitea_error", "detail": str(e)}
+
+
+@mcp.tool()
+def get_issue(repo: str, number: int) -> dict:
+    """Return one Gitea issue by repo and number."""
+    try:
+        return GiteaClient().get_issue(repo, number)
+    except CredentialNotFoundError as e:
+        return {"error": "credential_not_found", "detail": str(e), "repo": repo, "number": number}
+    except GiteaClientError as e:
+        return {"error": "gitea_error", "detail": str(e), "repo": repo, "number": number}
+
+
+@mcp.tool()
+def comment_on_issue(repo: str, number: int, body: str) -> dict:
+    """Post a comment to a Gitea issue."""
+    try:
+        return GiteaClient().comment_on_issue(repo, number, body)
+    except CredentialNotFoundError as e:
+        return {"error": "credential_not_found", "detail": str(e), "repo": repo, "number": number}
+    except GiteaClientError as e:
+        return {"error": "gitea_error", "detail": str(e), "repo": repo, "number": number}
+
+
+@mcp.tool()
+def transition_issue(repo: str, number: int, state: str) -> dict:
+    """Transition a Gitea issue to open/closed."""
+    if state not in {"open", "closed"}:
+        return {"error": "invalid_state", "detail": f"state={state!r} must be 'open' or 'closed'"}
+    try:
+        return GiteaClient().transition_issue(repo, number, state)
+    except CredentialNotFoundError as e:
+        return {"error": "credential_not_found", "detail": str(e), "repo": repo, "number": number}
+    except GiteaClientError as e:
+        return {"error": "gitea_error", "detail": str(e), "repo": repo, "number": number}
 
 
 if __name__ == "__main__":

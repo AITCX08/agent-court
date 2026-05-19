@@ -120,6 +120,27 @@ in_reply_to: 5a2c1b0d        # 可选
 文件名：`<unix_ts>-<id>-<from>-to-<to>.md`。watcher 靠 YAML frontmatter
 路由。回信把 `in_reply_to` 设成原消息 id 就能串成对话。
 
+## 工单驱动模式
+
+PR-12 新增了一个上游入口：Gitea issue 指派给你后，由 `gitea-watcher`
+轮询拉取、交给 `shenli` 决策，再按 GO / NEED_INFO / REJECT 分支落地。
+
+```text
+git.k2lab.ai issue assigned to me
+  -> bin/gitea-watcher --once
+  -> pending-shenli/<repo>-<num>.md
+  -> shenli decision JSON
+     -> GO        : migrate-to-court --new + court-up + dispatch_to_foreman
+     -> NEED_INFO : comment on issue
+     -> REJECT    : comment on issue + close
+  -> foreman receipt
+  -> watcher drains upstream inbox
+  -> comment back to issue
+```
+
+完整操作、凭证链路、launchd 安装和故障排查见
+`docs/issue-driven-workflow.md`。
+
 ## 快速上手
 
 ### 前置条件

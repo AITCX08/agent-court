@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${COURT_ROOT:-$HOME/.agent-court}"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PY_DIR="$REPO_ROOT/mcp/court-mcp"
+PYTHON_BIN="$PY_DIR/.venv/bin/python3"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="python3"
+fi
+PLIST_NAME="ai.k2lab.gitea-watcher.plist"
+TARGET_PLIST="$HOME/Library/LaunchAgents/$PLIST_NAME"
+TEMPLATE="$REPO_ROOT/docs/launchd/ai.k2lab.gitea-watcher.plist.template"
+
+usage() {
+  cat <<'EOF'
+usage: gitea-watcher <install|start|stop|status|logs|--once|help>
+EOF
+}
+
+cmd="${1:-help}"
+case "$cmd" in
+  --once)
+    cd "$PY_DIR"
+    exec "$PYTHON_BIN" -m gitea_watcher run-once
+    ;;
+  install)
+    mkdir -p "$HOME/Library/LaunchAgents"
+    sed \
+      -e "s#__HOME__#$HOME#g" \
+      -e "s#__REPO_ROOT__#$REPO_ROOT#g" \
+      -e "s#__COURT_ROOT__#$ROOT#g" \
+      "$TEMPLATE" > "$TARGET_PLIST"
+    echo "$TARGET_PLIST"
+    ;;
+  start)
+    launchctl unload "$TARGET_PLIST" >/dev/null 2>&1 || true
+    launchctl load "$TARGET_PLIST"
+    ;;
+  stop)
+    launchctl unload "$TARGET_PLIST"
+    ;;
+  status)
+    launchctl list | grep 'ai.k2lab.gitea-watcher' || true
+    ;;
+  logs)
+    tail -n 50 "$HOME/Library/Logs/gitea-watcher.out.log" "$HOME/Library/Logs/gitea-watcher.err.log"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "[gitea-watcher] unknown command: $cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

@@ -7,7 +7,7 @@
 #
 # Env:
 #   COURT_ROOT  — court home dir (default: ~/.agent-court)
-set -e
+set -euo pipefail
 
 PROJECT="${1:-}"
 if [ -z "$PROJECT" ]; then
@@ -76,5 +76,9 @@ echo "[court-up:$PROJECT] session '$SESSION' ready"
 echo "  roles:   $(yq -r '.roles[].name' "$CFG" | tr '\n' ' ')"
 echo "  utility: $(yq -r '.utility_windows[].name' "$CFG" 2>/dev/null | tr '\n' ' ')"
 echo
+
+if [ "${COURT_UP_NO_ATTACH:-0}" = "1" ]; then
+  exit 0
+fi
 
 exec tmux attach -t "$SESSION"

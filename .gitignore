@@ -35,3 +35,8 @@ projects/example/logs/*
 # `peers.yaml` is the live config and never should be.
 projects/*/identity/
 projects/*/peers.yaml
+
+# PR-12 gitea-watcher local state
+**/seen-issues.json
+**/pending-shenli/
+**/gitea-watcher/error-state.json

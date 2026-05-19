@@ -21,4 +21,13 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 homepage = "https://github.com/YOUR_GH_USER/agent-yamen"
 
 [tool.setuptools]
-py-modules = ["server", "bangjiao", "yiguan_daemon", "zhuyin"]
+py-modules = [
+  "server",
+  "bangjiao",
+  "yiguan_daemon",
+  "zhuyin",
+  "gitea_credentials",
+  "gitea_client",
+  "gitea_watcher",
+  "shenli",
+]
