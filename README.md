@@ -141,6 +141,13 @@ git.k2lab.ai issue assigned to me
 完整操作、凭证链路、launchd 安装和故障排查见
 `docs/issue-driven-workflow.md`。
 
+## 两种运行模式
+
+| 模式 | 触发命令 | 行为 | 适用场景 |
+|---|---|---|---|
+| court (默认) | `gitea-watcher start` / `gitea-watcher --once` | 黑盒自动准入并直接起 court | 稳定批量处理 |
+| dashboard | `gitea-watcher dashboard` | 双通道审批 + tmux 控制塔 + 独立 issue window | 需要人工观察和远程批示 |
+
 ## 快速上手
 
 ### 前置条件

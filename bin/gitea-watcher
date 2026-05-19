@@ -14,7 +14,7 @@ TEMPLATE="$REPO_ROOT/docs/launchd/ai.k2lab.gitea-watcher.plist.template"
 
 usage() {
   cat <<'EOF'
-usage: gitea-watcher <install|start|stop|status|logs|--once|help>
+usage: gitea-watcher <install [--mode court|dashboard]|start|stop|status|logs|dashboard|--once|help>
 EOF
 }
 
@@ -24,14 +24,43 @@ case "$cmd" in
     cd "$PY_DIR"
     exec "$PYTHON_BIN" -m gitea_watcher run-once
     ;;
+  dashboard)
+    shift || true
+    if [ -z "${TMUX:-}" ]; then
+      if ! tmux has-session -t agent-court-dashboard >/dev/null 2>&1; then
+        tmux new-session -d -s agent-court-dashboard -n watcher \
+          "cd \"$PY_DIR\" && exec \"$PYTHON_BIN\" -m gitea_watcher loop --mode dashboard"
+      fi
+      exec tmux attach -t agent-court-dashboard
+    fi
+    cd "$PY_DIR"
+    exec "$PYTHON_BIN" -m gitea_watcher loop --mode dashboard "$@"
+    ;;
   install)
+    shift || true
+    INSTALL_MODE="court"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --mode)
+          INSTALL_MODE="${2:-court}"; shift 2 ;;
+        --mode=*)
+          INSTALL_MODE="${1#--mode=}"; shift ;;
+        *)
+          echo "[gitea-watcher install] unknown arg: $1" >&2; exit 1 ;;
+      esac
+    done
+    if [ "$INSTALL_MODE" != "court" ] && [ "$INSTALL_MODE" != "dashboard" ]; then
+      echo "[gitea-watcher install] --mode 必须是 court 或 dashboard, 当前: $INSTALL_MODE" >&2
+      exit 1
+    fi
     mkdir -p "$HOME/Library/LaunchAgents"
     sed \
       -e "s#__HOME__#$HOME#g" \
       -e "s#__REPO_ROOT__#$REPO_ROOT#g" \
       -e "s#__COURT_ROOT__#$ROOT#g" \
+      -e "s#__WATCHER_MODE__#$INSTALL_MODE#g" \
       "$TEMPLATE" > "$TARGET_PLIST"
-    echo "$TARGET_PLIST"
+    echo "$TARGET_PLIST (mode=$INSTALL_MODE)"
     ;;
   start)
     launchctl unload "$TARGET_PLIST" >/dev/null 2>&1 || true

@@ -15,6 +15,8 @@
     <dict>
       <key>COURT_ROOT</key>
       <string>__COURT_ROOT__</string>
+      <key>WATCHER_MODE</key>
+      <string>__WATCHER_MODE__</string>
     </dict>
     <key>StandardOutPath</key>
     <string>__HOME__/Library/Logs/gitea-watcher.out.log</string>

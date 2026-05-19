@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 
 import server
+from dual_channel_approval import ApprovalStore, request_intake
 from gitea_client import (
     GiteaAuthError,
     GiteaClient,
@@ -41,7 +42,10 @@ class GiteaWatcher:
         poll_interval: int = 30,
         court_root: Path | None = None,
         client: GiteaClient | None = None,
+        mode: str = "court",
     ) -> None:
+        if mode not in {"court", "dashboard"}:
+            raise ValueError(f"unsupported mode: {mode!r}")
         self.poll_interval = poll_interval
         self.court_root = court_root or Path(os.environ.get("COURT_ROOT", str(Path.home() / ".agent-court")))
         self.state_dir = self.court_root / "gitea-watcher"
@@ -52,11 +56,22 @@ class GiteaWatcher:
         self.max_concurrent_courts = int(os.environ.get("MAX_CONCURRENT_COURTS", "5"))
         self.bin_dir = Path(__file__).resolve().parents[2] / "bin"
         self._lock_path = self.state_dir / ".state.lock"
+        self.mode = mode
 
     def loop(self) -> None:
-        while True:
-            self.run_once()
-            time.sleep(self.poll_interval)
+        router = None
+        if self.mode == "dashboard":
+            from im_reply_router import ImReplyRouter
+
+            router = ImReplyRouter(self.court_root)
+            router.start()
+        try:
+            while True:
+                self.run_once()
+                time.sleep(self.poll_interval)
+        finally:
+            if router is not None:
+                router.stop()
 
     def run_once(self) -> dict[str, int]:
         self._ensure_dirs()
@@ -93,13 +108,22 @@ class GiteaWatcher:
                 comments = self.client.list_issue_comments(self._issue_repo(item), int(item["number"]))
                 pending_file = self._write_pending_file(detail, comments)
                 decision = self._dispatch_shenli(pending_file)
-                result = self._apply_decision(detail, decision)
-                seen[key] = self._build_seen_entry(
+                result = self._apply_decision_dashboard(detail, decision) if self.mode == "dashboard" else self._apply_decision(detail, decision)
+                entry = self._build_seen_entry(
                     detail,
                     last_action=result["last_action"],
                     court_project=decision.get("court_project_name", ""),
                     retry_at=result.get("retry_at"),
+                    approval_winner=result.get("approval_winner"),
+                    tmux_window=result.get("tmux_window"),
+                    dispatched_at=result.get("dispatched_at"),
+                    stage=result.get("stage"),
                 )
+                # 让 dashboard 模式特有的字段也带进 seen-issues.json (router 用)
+                for extra_key in ("intake_slug_id", "intake_msg_id"):
+                    if result.get(extra_key):
+                        entry[extra_key] = result[extra_key]
+                seen[key] = entry
 
             self._drain_upstream_inboxes(seen)
             self._atomic_write_json(self.seen_path, seen)
@@ -113,6 +137,10 @@ class GiteaWatcher:
         last_action: str,
         court_project: str = "",
         retry_at: str | None = None,
+        approval_winner: str | None = None,
+        tmux_window: str | None = None,
+        dispatched_at: str | None = None,
+        stage: str | None = None,
     ) -> dict[str, Any]:
         entry = {
             "repo": self._issue_repo(issue),
@@ -124,6 +152,14 @@ class GiteaWatcher:
         }
         if retry_at:
             entry["retry_at"] = retry_at
+        if approval_winner:
+            entry["approval_winner"] = approval_winner
+        if tmux_window:
+            entry["tmux_window"] = tmux_window
+        if dispatched_at:
+            entry["dispatched_at"] = dispatched_at
+        if stage:
+            entry["stage"] = stage
         return entry
 
     def _merge_retry_candidates(self, current: list[dict[str, Any]], seen: dict[str, Any]) -> list[dict[str, Any]]:
@@ -142,6 +178,14 @@ class GiteaWatcher:
                 }
         return list(merged.values())
 
+    # 一旦进入这些状态, dashboard 路径里不再 re-spawn / 不再走完整 shenli, 仅写控制塔日志通知
+    _DASHBOARD_INFLIGHT_ACTIONS = {
+        "AWAITING_INTAKE_APPROVAL",
+        "DISPATCHED_DASHBOARD",
+        "EXECUTING",
+        "AWAITING_PLAN_APPROVAL",
+    }
+
     def _diff(self, current: list[dict[str, Any]], seen: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         new_items: list[dict[str, Any]] = []
         updated_items: list[dict[str, Any]] = []
@@ -153,6 +197,10 @@ class GiteaWatcher:
                 new_items.append(item)
             elif seen_entry.get("last_action") == "PENDING_RETRY":
                 updated_items.append(item)
+            elif self.mode == "dashboard" and seen_entry.get("last_action") in self._DASHBOARD_INFLIGHT_ACTIONS:
+                # dashboard 模式下 issue 已经在跑了, 即使 updated_at 变了也不重新触发
+                # (避免用户编辑 issue body 后又被 spawn 一个 window)
+                continue
             elif seen_entry.get("updated_at") != updated_at:
                 updated_items.append(item)
         return new_items, updated_items
@@ -255,6 +303,34 @@ class GiteaWatcher:
             self.client.transition_issue(repo, number, "closed")
             return {"last_action": "REJECT"}
         raise ValueError(f"unknown decision: {action!r}")
+
+    def _apply_decision_dashboard(self, issue: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
+        """dashboard 模式: 异步入站. GO 时只 queue 通知, 不等审批; spawn 由 ImReplyRouter 完成."""
+        if decision["decision"] != "GO":
+            return self._apply_decision(issue, decision)
+        repo = issue["repository"]["full_name"]
+        number = int(issue["number"])
+        # 写完整 issue + decision 上下文到 pending-intake-context/, 让 router 之后 spawn 时能找到原始上下文
+        ctx_dir = self.state_dir / "pending-intake-context"
+        ctx_dir.mkdir(parents=True, exist_ok=True)
+        slug = repo.replace("/", "-").lower()
+        ctx_path = ctx_dir / f"{slug}-{number}.json"
+        try:
+            comments = self.client.list_issue_comments(repo, number)
+        except GiteaClientError:
+            comments = []
+        ctx_payload = {"issue": issue, "decision": decision, "comments": comments}
+        ctx_path.write_text(json.dumps(ctx_payload, ensure_ascii=False, indent=2))
+
+        # 推送 IM + 终端提示, 立即 return, 不等审批
+        approval = ApprovalStore(court_root=self.court_root)
+        info = approval.queue_intake(repo, number, issue, decision)
+        return {
+            "last_action": "AWAITING_INTAKE_APPROVAL",
+            "stage": "INTAKE",
+            "intake_slug_id": info["slug_id"],
+            "intake_msg_id": info["msg_id"],
+        }
 
     def _safe_subprocess_env(self) -> dict[str, str]:
         return {key: value for key, value in os.environ.items() if key in SAFE_ENV_KEYS}
@@ -363,14 +439,23 @@ class _FileLock:
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m gitea_watcher")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("run-once")
+    run_once = sub.add_parser("run-once")
+    run_once.add_argument("--mode", default=os.environ.get("WATCHER_MODE", "court"))
     p = sub.add_parser("loop")
     p.add_argument("--poll-interval", type=int, default=30)
+    p.add_argument("--mode", default=os.environ.get("WATCHER_MODE", "court"))
+    status = sub.add_parser("status")
+    status.add_argument("--mode", default=os.environ.get("WATCHER_MODE", "court"))
     args = parser.parse_args()
-    watcher = GiteaWatcher(poll_interval=getattr(args, "poll_interval", 30))
+    watcher = GiteaWatcher(poll_interval=getattr(args, "poll_interval", 30), mode=getattr(args, "mode", "court"))
     try:
         if args.command == "run-once":
             print(json.dumps(watcher.run_once(), ensure_ascii=False, indent=2))
+        elif args.command == "status":
+            seen = watcher._load_json(watcher.seen_path, {})
+            print("repo\tnum\tstage\twinner\ttmux_window")
+            for row in seen.values():
+                print(f"{row.get('repo','')}\t{row.get('number','')}\t{row.get('stage', row.get('last_action',''))}\t{row.get('approval_winner','')}\t{row.get('tmux_window','')}")
         else:
             watcher.loop()
     except (GiteaClientError, RuntimeError, ValueError) as exc:

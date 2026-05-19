@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Spawn-issue-window: 在 agent-court-dashboard tmux session 起一个新 window 跑 issue-resolver
+# Claude CLI.
+#
+# 设计要点 (PR-13 review C1 fix):
+# 1. 不用 shell `$(cat file)` 把 SKILL.md 嵌进命令字符串 (会被二次解析 + 注入风险)
+# 2. 不用 `cat intro | claude` (stdin EOF 后 Claude 立即退出, window 没机会进入交互)
+# 3. wrapper 写到独立目录, wrapper 内部用 bash 原生 $(<file) 读 skill, exec </dev/tty 保持 stdin
+#
+# Usage:
+#   spawn-issue-window <repo> <num> <intro-file>
+#
+set -euo pipefail
+
+REPO="${1:-}"
+NUM="${2:-}"
+INTRO_FILE="${3:-}"
+
+if [ -z "$REPO" ] || [ -z "$NUM" ] || [ -z "$INTRO_FILE" ]; then
+  echo "[spawn-issue-window] usage: spawn-issue-window <repo> <num> <intro-file>" >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PY_DIR="$REPO_ROOT/mcp/court-mcp"
+PYTHON_BIN="$PY_DIR/.venv/bin/python3"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="python3"
+fi
+SKILL_FILE="$REPO_ROOT/.claude/skills/issue-resolver/SKILL.md"
+
+if [ ! -f "$SKILL_FILE" ]; then
+  echo "[spawn-issue-window] missing skill file: $SKILL_FILE" >&2
+  exit 1
+fi
+if [ ! -f "$INTRO_FILE" ]; then
+  echo "[spawn-issue-window] missing intro file: $INTRO_FILE" >&2
+  exit 1
+fi
+
+# 用 Python helper 解析出 tmux window 名 (跟 dashboard_tmux.issue_window_name 一致)
+WINDOW_NAME="$(cd "$PY_DIR" && "$PYTHON_BIN" -c "from dashboard_tmux import issue_window_name; print(issue_window_name('$REPO', int('$NUM')))")"
+
+# 准备 wrapper 工作目录 (独立, 不污染 /tmp 全局)
+WRAPPER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-court-issue-XXXXXX")"
+cp "$SKILL_FILE" "$WRAPPER_DIR/skill.md"
+cp "$INTRO_FILE" "$WRAPPER_DIR/intro.txt"
+WRAPPER="$WRAPPER_DIR/run.sh"
+
+cat > "$WRAPPER" <<'WRAPPER_EOF'
+#!/usr/bin/env bash
+# Wrapper 启动 claude CLI:
+# - intro.txt 通过 process substitution 注入 stdin 作为第一段输入
+# - exec </dev/tty 之后切到终端 tty, 保持 Claude REPL 不被 EOF kill
+# - skill.md 通过 bash 原生 $(<file) 读取, 不走 shell 二次解析, 不会注入
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec < <( cat "$HERE/intro.txt"; exec </dev/tty )
+exec claude --append-system-prompt "$(<"$HERE/skill.md")"
+WRAPPER_EOF
+chmod +x "$WRAPPER"
+
+# 起新 window. tmux new-window 的命令参数是一个完整 shell command, 但 "$WRAPPER" 是
+# bash 已经 quote 过的路径, mktemp 生成的也只含安全字符 (字母数字 + .)
+tmux new-window -t agent-court-dashboard -n "$WINDOW_NAME" "$WRAPPER"

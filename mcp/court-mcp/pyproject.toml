@@ -30,4 +30,8 @@ py-modules = [
   "gitea_client",
   "gitea_watcher",
   "shenli",
+  "dashboard_tmux",
+  "dual_channel_approval",
+  "issue_resolver",
+  "im_reply_router",
 ]
